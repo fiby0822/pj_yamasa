@@ -24,7 +24,7 @@ load_dotenv()
 plt.style.use('seaborn-v0_8-darkgrid')
 sns.set_palette("husl")
 
-def visualize_data_distribution(df, target_col='Actual Value', output_dir='output_data/visualizations'):
+def visualize_data_distribution(df, target_col='actual_value', output_dir='output_data/visualizations'):
     """データ分布の可視化"""
     os.makedirs(output_dir, exist_ok=True)
 
@@ -46,9 +46,9 @@ def visualize_data_distribution(df, target_col='Actual Value', output_dir='outpu
     axes[0, 1].grid(True, alpha=0.3)
 
     # 3. 時系列プロット
-    if 'File Date' in df.columns:
-        df_sorted = df.sort_values('File Date')
-        daily_sum = df_sorted.groupby('File Date')[target_col].sum()
+    if 'file_date' in df.columns:
+        df_sorted = df.sort_values('file_date')
+        daily_sum = df_sorted.groupby('file_date')[target_col].sum()
         axes[1, 0].plot(daily_sum.index, daily_sum.values, color='green', alpha=0.7)
         axes[1, 0].set_title('Daily Total of Actual Value', fontsize=14, fontweight='bold')
         axes[1, 0].set_xlabel('Date')
@@ -71,7 +71,7 @@ def visualize_data_distribution(df, target_col='Actual Value', output_dir='outpu
 
     print("📊 データ分布の可視化完了")
 
-def visualize_seasonal_patterns(df, target_col='Actual Value', output_dir='output_data/visualizations'):
+def visualize_seasonal_patterns(df, target_col='actual_value', output_dir='output_data/visualizations'):
     """季節性パターンの可視化"""
     os.makedirs(output_dir, exist_ok=True)
 
@@ -278,7 +278,7 @@ def print_evaluation_metrics(y_true, y_pred, model_name="Model"):
         'std_error': std_error
     }
 
-def train_model_with_visualization(df_features, target_col='Actual Value'):
+def train_model_with_visualization(df_features, target_col='actual_value'):
     """可視化機能付きのモデル学習"""
 
     print("\n" + "="*60)
@@ -424,15 +424,15 @@ def main():
     print(f"  カラム数: {len(df_features.columns)}")
 
     # Material Key毎のデータ数
-    if 'Material Key' in df_features.columns:
-        n_materials = df_features['Material Key'].nunique()
+    if 'material_key' in df_features.columns:
+        n_materials = df_features['material_key'].nunique()
         print(f"  ユニークなMaterial Key数: {n_materials:,}")
 
     # 日付範囲
-    if 'File Date' in df_features.columns:
-        df_features['File Date'] = pd.to_datetime(df_features['File Date'], errors='coerce')
-        date_min = df_features['File Date'].min()
-        date_max = df_features['File Date'].max()
+    if 'file_date' in df_features.columns:
+        df_features['file_date'] = pd.to_datetime(df_features['file_date'], errors='coerce')
+        date_min = df_features['file_date'].min()
+        date_max = df_features['file_date'].max()
         print(f"  日付範囲: {date_min.strftime('%Y-%m-%d')} 〜 {date_max.strftime('%Y-%m-%d')}")
 
     # モデル学習と可視化
@@ -442,27 +442,7 @@ def main():
         print("❌ エラー: モデル学習に失敗しました")
         return None
 
-    # 結果を保存
-    output_dir = "output_data/models"
-    os.makedirs(output_dir, exist_ok=True)
-
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-
-    # モデルを保存
-    import joblib
-    model_file = f"{output_dir}/model_visual_{timestamp}.pkl"
-    joblib.dump(model, model_file)
-    print(f"\n💾 モデル保存: {model_file}")
-
-    # 特徴量重要度を保存
-    importance_file = f"{output_dir}/importance_visual_{timestamp}.csv"
-    importance.to_csv(importance_file, index=False)
-    print(f"💾 特徴量重要度保存: {importance_file}")
-
-    # メトリクスを保存
-    metrics_file = f"{output_dir}/metrics_visual_{timestamp}.json"
-    pd.Series(metrics).to_json(metrics_file)
-    print(f"💾 評価指標保存: {metrics_file}")
+    # モデル保存は削除（可視化のみローカル保存）
 
     print("\n" + "="*70)
     print("✅ すべての処理が完了しました！")

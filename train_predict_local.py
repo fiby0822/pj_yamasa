@@ -12,6 +12,8 @@ import os
 import sys
 from datetime import datetime
 from dotenv import load_dotenv
+import boto3
+from io import BytesIO
 
 # 環境変数を読み込み
 load_dotenv()
@@ -108,18 +110,34 @@ def main():
     print("学習・予測処理開始（ローカル版）")
     print("="*50)
 
-    # ローカルの特徴量ファイルを読み込む
-    features_file = "output_data/features/df_features_yamasa_latest.parquet"
-
-    if not os.path.exists(features_file):
-        print(f"エラー: 特徴量ファイルが見つかりません: {features_file}")
-        print("先に create_features_local.py を実行してください")
-        return None
+    # S3から特徴量ファイルを読み込む
+    bucket_name = "fiby-yamasa-prediction"
+    features_key = "features/df_features_yamasa_latest.parquet"
 
     print(f"\n1. 特徴量データ読込中...")
-    print(f"ファイル: {features_file}")
+    print(f"ソース: s3://{bucket_name}/{features_key}")
 
-    df_features = pd.read_parquet(features_file)
+    # S3クライアント設定
+    s3 = boto3.client('s3',
+                      aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
+                      aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY'),
+                      region_name=os.getenv('AWS_DEFAULT_REGION', 'ap-northeast-1'))
+
+    try:
+        # S3からデータを読み込み
+        obj = s3.get_object(Bucket=bucket_name, Key=features_key)
+        df_features = pd.read_parquet(BytesIO(obj['Body'].read()))
+        print(f"S3からの読み込み成功")
+    except Exception as e:
+        print(f"S3からの読み込み失敗: {e}")
+        # フォールバックとしてローカルファイルを読み込み
+        local_file = "output_data/features/df_features_yamasa_latest.parquet"
+        if os.path.exists(local_file):
+            print(f"ローカルファイルから読み込み: {local_file}")
+            df_features = pd.read_parquet(local_file)
+        else:
+            print("エラー: データが見つかりません")
+            return None
     print(f"読込データサイズ: {df_features.shape}")
 
     # データの基本情報を表示
@@ -148,27 +166,82 @@ def main():
         print("エラー: モデル学習に失敗しました")
         return None
 
-    # 3. 結果を保存
-    output_dir = "output_data/models"
-    os.makedirs(output_dir, exist_ok=True)
-
+    # 3. 結果をS3とローカルに保存
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    date_dir = datetime.now().strftime('%Y%m%d')  # YYYYMMDD形式の日付ディレクトリ
 
     # モデルを保存
     import joblib
-    model_file = f"{output_dir}/model_{timestamp}.pkl"
-    joblib.dump(model, model_file)
-    print(f"\nモデル保存: {model_file}")
 
-    # 特徴量重要度を保存
-    importance_file = f"{output_dir}/importance_{timestamp}.csv"
-    importance.to_csv(importance_file, index=False)
-    print(f"特徴量重要度保存: {importance_file}")
+    # S3に保存
+    print("\nS3に結果を保存中...")
 
-    # メトリクスを保存
-    metrics_file = f"{output_dir}/metrics_{timestamp}.json"
-    pd.Series(metrics).to_json(metrics_file)
-    print(f"評価指標保存: {metrics_file}")
+    # モデルをバイト列にシリアライズ
+    model_buffer = BytesIO()
+    joblib.dump(model, model_buffer)
+    model_buffer.seek(0)
+
+    # S3にモデルをアップロード（日付ディレクトリ付き）
+    model_key = f"models/{date_dir}/model_{timestamp}.pkl"
+    s3.put_object(
+        Bucket=bucket_name,
+        Key=model_key,
+        Body=model_buffer.getvalue()
+    )
+    print(f"S3モデル保存: s3://{bucket_name}/{model_key}")
+
+    # 最新版としても保存
+    model_latest_key = "models/model_latest.pkl"
+    s3.put_object(
+        Bucket=bucket_name,
+        Key=model_latest_key,
+        Body=model_buffer.getvalue()
+    )
+    print(f"S3最新モデル保存: s3://{bucket_name}/{model_latest_key}")
+
+    # 特徴量重要度をS3に保存
+    importance_buffer = BytesIO()
+    importance.to_parquet(importance_buffer, index=False)
+    importance_buffer.seek(0)
+    importance_key = f"models/{date_dir}/importance_{timestamp}.parquet"
+    s3.put_object(
+        Bucket=bucket_name,
+        Key=importance_key,
+        Body=importance_buffer.getvalue()
+    )
+    print(f"S3特徴量重要度保存: s3://{bucket_name}/{importance_key}")
+
+    # 最新版としても保存
+    importance_latest_key = "models/importance_latest.parquet"
+    s3.put_object(
+        Bucket=bucket_name,
+        Key=importance_latest_key,
+        Body=importance_buffer.getvalue()
+    )
+    print(f"S3最新特徴量重要度保存: s3://{bucket_name}/{importance_latest_key}")
+
+    # メトリクスをS3に保存
+    metrics_buffer = BytesIO()
+    pd.Series(metrics).to_json(metrics_buffer)
+    metrics_buffer.seek(0)
+    metrics_key = f"models/{date_dir}/metrics_{timestamp}.json"
+    s3.put_object(
+        Bucket=bucket_name,
+        Key=metrics_key,
+        Body=metrics_buffer.getvalue()
+    )
+    print(f"S3評価指標保存: s3://{bucket_name}/{metrics_key}")
+
+    # 最新版としても保存
+    metrics_latest_key = "models/metrics_latest.json"
+    s3.put_object(
+        Bucket=bucket_name,
+        Key=metrics_latest_key,
+        Body=metrics_buffer.getvalue()
+    )
+    print(f"S3最新評価指標保存: s3://{bucket_name}/{metrics_latest_key}")
+
+    # ローカル保存は削除（S3のみに保存）
 
     print("\n" + "="*50)
     print("処理完了！")

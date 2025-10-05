@@ -9,6 +9,7 @@ from smart_open import open as smart_open
 import os
 from datetime import datetime
 from dotenv import load_dotenv
+import jpholiday
 
 # 環境変数を読み込み
 load_dotenv()
@@ -88,6 +89,47 @@ def _add_timeseries_features(df, window_size_config, model_type="confirmed_order
         df['is_month_end_f'] = df['file_date'].dt.is_month_end.astype(int)
         df['is_month_start_f'] = df['file_date'].dt.is_month_start.astype(int)
 
+        # 新しい日付特徴量
+        # 営業日フラグ（平日かつ非祝日・非年末）
+        # 土日を非営業日とする
+        is_weekend = df['file_date'].dt.dayofweek.isin([5, 6])
+
+        # 年末（12/30, 12/31）を非営業日とする
+        is_year_end = ((df['file_date'].dt.month == 12) &
+                       (df['file_date'].dt.day.isin([30, 31])))
+
+        # jpholidayを使用して正確な日本の祝日を取得
+        def is_japan_holiday(date):
+            """jpholidayを使って祝日判定"""
+            try:
+                # 年始休暇（1/2, 1/3）を追加
+                if date.month == 1 and date.day in [2, 3]:
+                    return True
+                # jpholidayで祝日判定
+                return jpholiday.is_holiday(date)
+            except:
+                return False
+
+        # 各日付に対して祝日判定を適用
+        is_holiday = df['file_date'].apply(is_japan_holiday)
+
+        # 営業日フラグ（土日・祝日・年末以外が1）
+        df['is_business_day_f'] = (~(is_weekend | is_year_end | is_holiday)).astype(int)
+
+        # 冗長な特徴量は作成しない（is_business_day_fに含まれるため）
+        # df['is_weekend_f'] = is_weekend.astype(int)  # 削除
+        # df['is_holiday_f'] = is_holiday.astype(int)  # 削除
+        # df['is_year_end_f'] = is_year_end.astype(int)  # 削除
+
+        # 金曜日フラグ（ピークの日）
+        df['is_friday_f'] = (df['file_date'].dt.dayofweek == 4).astype(int)
+
+        # 曜日×月の交互作用
+        df['dow_month_interaction_f'] = df['day_of_week_f'] * df['month_f']
+
+        # 週単位のマイルストーン（7,14,21,28日）フラグ
+        df['is_weekly_milestone_f'] = df['day_f'].isin([7, 14, 21, 28]).astype(int)
+
     # material_key毎の特徴量作成
     if 'material_key' in df.columns:
         print("material_key毎の特徴量作成中...")
@@ -115,6 +157,23 @@ def _add_timeseries_features(df, window_size_config, model_type="confirmed_order
         for cumulative_mean in window_size_config["material_key"]["cumulative_mean"]:
             df[f'cumulative_mean_{cumulative_mean}_f'] = df.groupby('material_key')['actual_value'].transform(
                 lambda x: x.rolling(window=cumulative_mean, min_periods=1).mean().shift(1)
+            )
+
+        # 週初からの累積平均 (week-to-date mean) - 簡易版
+        if 'day_of_week_f' in df.columns:
+            # 週初からの累積平均を計算（より効率的な実装）
+            # 各週の開始を検出してグループ化
+            df['week_start'] = (df['day_of_week_f'] == 0).astype(int).cumsum()
+            df['week_to_date_mean_f'] = df.groupby(['material_key', 'week_start'])['actual_value'].transform(
+                lambda x: x.expanding().mean().shift(1).fillna(0)
+            )
+            df = df.drop('week_start', axis=1)
+
+        # Material Key × 曜日の過去平均 - 効率的な実装
+        if 'day_of_week_f' in df.columns:
+            # 各Material Key × 曜日の組み合わせで累積平均を計算
+            df['material_dow_mean_f'] = df.groupby(['material_key', 'day_of_week_f'])['actual_value'].transform(
+                lambda x: x.expanding().mean().shift(1).fillna(0)
             )
 
         print("material_key features done")
@@ -237,7 +296,7 @@ def main():
     s3 = boto3.client('s3',
                       aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
                       aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY'),
-                      region_name=os.getenv('AWS_DEFAULT_REGION'))
+                      region_name=os.getenv('AWS_DEFAULT_REGION', 'ap-northeast-1'))
 
     try:
         # S3 URLを構築
@@ -330,14 +389,43 @@ def main():
         if len(feature_cols) > 20:
             print(f"  ... 他 {len(feature_cols)-20} 個")
 
-        # ローカルに保存
-        print("\nローカル保存中...")
-        df_features.to_parquet(output_file, index=False, compression='snappy')
-        print(f"データ保存成功: {output_file}")
+        # S3に保存
+        print("\nS3保存中...")
+        from io import BytesIO
 
-        # 最新版として保存
-        df_features.to_parquet(latest_file, index=False, compression='snappy')
-        print(f"最新版保存成功: {latest_file}")
+        # S3クライアントは既に作成済み
+        s3 = boto3.client('s3',
+                          aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
+                          aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY'),
+                          region_name=os.getenv('AWS_DEFAULT_REGION'))
+
+        # Parquetバッファを作成
+        parquet_buffer = BytesIO()
+        df_features.to_parquet(parquet_buffer, index=False, compression='snappy')
+        parquet_buffer.seek(0)
+
+        # 日付ディレクトリを作成 (YYYYMMDD)
+        date_dir = datetime.now().strftime('%Y%m%d')
+
+        # S3にアップロード（日付ディレクトリ付き）
+        s3_output_key = f"features/{date_dir}/df_features_yamasa_{timestamp}.parquet"
+        s3.put_object(
+            Bucket=bucket_name,
+            Key=s3_output_key,
+            Body=parquet_buffer.getvalue()
+        )
+        print(f"S3保存成功: s3://{bucket_name}/{s3_output_key}")
+
+        # 最新版としても保存（features直下に置く）
+        s3_latest_key = "features/df_features_yamasa_latest.parquet"
+        s3.put_object(
+            Bucket=bucket_name,
+            Key=s3_latest_key,
+            Body=parquet_buffer.getvalue()
+        )
+        print(f"S3最新版保存成功: s3://{bucket_name}/{s3_latest_key}")
+
+        # ローカル保存は削除（S3のみに保存）
 
         # データ情報を表示
         print("\n=== データ情報 ===")
