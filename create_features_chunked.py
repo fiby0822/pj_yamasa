@@ -27,10 +27,11 @@ def read_csv_sample_from_s3(bucket_name, file_key, nrows=1000):
                       aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY'),
                       region_name=os.getenv('AWS_DEFAULT_REGION'))
     try:
-        # 最初の部分だけ読み込む
-        obj = s3.get_object(Bucket=bucket_name, Key=file_key, Range=f'bytes=0-10485760')  # 10MB
-        sample_text = obj['Body'].read().decode('utf-8', errors='ignore')
-        df_sample = pd.read_csv(StringIO(sample_text), nrows=nrows)
+        # 最初の部分だけ読み込む（UTF-16なので多めに取得）
+        obj = s3.get_object(Bucket=bucket_name, Key=file_key, Range=f'bytes=0-20971520')  # 20MB
+        raw_data = obj['Body'].read()
+        # UTF-16、タブ区切りで読み込む
+        df_sample = pd.read_csv(BytesIO(raw_data), encoding='utf-16', sep='\t', nrows=nrows, on_bad_lines='skip')
         print(f"サンプルデータ読込成功: {df_sample.shape}")
         return df_sample
     except Exception as e:
@@ -55,13 +56,13 @@ def process_features_simple(df):
             elif min_val >= -2147483648 and max_val <= 2147483647:
                 df[col] = df[col].astype('int32')
 
-    # 日付処理
-    if 'file_date' in df.columns:
-        df['file_date'] = pd.to_datetime(df['file_date'], errors='coerce')
-        df['year'] = df['file_date'].dt.year.astype('int16')
-        df['month'] = df['file_date'].dt.month.astype('int8')
-        df['day'] = df['file_date'].dt.day.astype('int8')
-        df['day_of_week'] = df['file_date'].dt.dayofweek.astype('int8')
+    # 日付処理（カラム名を正しく変換）
+    if 'File Date' in df.columns:
+        df['File Date'] = pd.to_datetime(df['File Date'], errors='coerce')
+        df['year'] = df['File Date'].dt.year.astype('int16')
+        df['month'] = df['File Date'].dt.month.astype('int8')
+        df['day'] = df['File Date'].dt.day.astype('int8')
+        df['day_of_week'] = df['File Date'].dt.dayofweek.astype('int8')
 
         # 基本的な特徴量を追加
         df['year_f'] = df['year']
@@ -75,7 +76,7 @@ def main():
     """メイン処理"""
     # S3の設定
     bucket_name = "fiby-yamasa-prediction"
-    input_file_key = "df_confirmed_order_input_yamasa_fill_zero_df_confirmed_order_input_yamasa_fill_zero.csv"
+    input_file_key = "df_confirmed_order_input_yamasa_fill_zero_df_confirmed_order_input_yamasa_fill_zero.csv"  # 正しいファイル名
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     output_file_key = f"output_data/features/df_features_yamasa_{timestamp}.parquet"
     latest_file_key = "output_data/features/df_features_yamasa_latest.parquet"
@@ -102,19 +103,20 @@ def main():
         # S3から全データを読み込む（メモリに注意）
         print("全データ読込中（これには時間がかかる場合があります）...")
         obj = s3.get_object(Bucket=bucket_name, Key=input_file_key)
-        df = pd.read_csv(obj['Body'], low_memory=False)
+        # UTF-16、タブ区切りで読み込む
+        df = pd.read_csv(obj['Body'], encoding='utf-16', sep='\t', low_memory=False)
         print(f"読込完了: {df.shape}")
 
         # データ型の最適化
         print("データ型最適化中...")
         df = process_features_simple(df)
 
-        # material_key毎の基本統計量を作成
-        if 'material_key' in df.columns and 'actual_value' in df.columns:
+        # Material Key毎の基本統計量を作成（正しいカラム名を使用）
+        if 'Material Key' in df.columns and 'Actual Value' in df.columns:
             print("集計特徴量作成中...")
 
-            # material_key毎の基本統計量
-            agg_features = df.groupby('material_key')['actual_value'].agg([
+            # Material Key毎の基本統計量
+            agg_features = df.groupby('Material Key')['Actual Value'].agg([
                 ('mean_f', 'mean'),
                 ('std_f', 'std'),
                 ('min_f', 'min'),
@@ -123,14 +125,14 @@ def main():
             ]).reset_index()
 
             # メインデータフレームにマージ
-            df = df.merge(agg_features, on='material_key', how='left')
+            df = df.merge(agg_features, on='Material Key', how='left')
 
             # シンプルなラグ特徴量（メモリ効率のため最小限）
-            if 'file_date' in df.columns:
-                df = df.sort_values(['material_key', 'file_date'])
-                df['lag_1_f'] = df.groupby('material_key')['actual_value'].shift(1)
-                df['lag_2_f'] = df.groupby('material_key')['actual_value'].shift(2)
-                df['lag_3_f'] = df.groupby('material_key')['actual_value'].shift(3)
+            if 'File Date' in df.columns:
+                df = df.sort_values(['Material Key', 'File Date'])
+                df['lag_1_f'] = df.groupby('Material Key')['Actual Value'].shift(1)
+                df['lag_2_f'] = df.groupby('Material Key')['Actual Value'].shift(2)
+                df['lag_3_f'] = df.groupby('Material Key')['Actual Value'].shift(3)
 
         print(f"特徴量作成後のデータサイズ: {df.shape}")
 
