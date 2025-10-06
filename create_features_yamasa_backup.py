@@ -279,7 +279,7 @@ def main():
     """メイン処理"""
     # S3の設定
     bucket_name = "fiby-yamasa-prediction"
-    input_file_key = "data/df_confirmed_order_input_yamasa_fill_zero.parquet"
+    input_file_key = "df_confirmed_order_input_yamasa_fill_zero_df_confirmed_order_input_yamasa_fill_zero.csv"
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
 
     # ローカル保存先

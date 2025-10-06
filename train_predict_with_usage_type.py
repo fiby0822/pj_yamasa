@@ -422,9 +422,23 @@ def main():
         n_materials = df_features['material_key'].nunique()
         print(f"ユニークなMaterial Key数: {n_materials:,}")
 
-    if 'usage_type' in df_features.columns:
-        print(f"usage_type分布:")
+    # usage_type毎のmaterial_key数を表示
+    print("\n" + "="*50)
+    print("usage_type毎のmaterial_key数:")
+    print("="*50)
+    if 'usage_type' in df_features.columns and 'material_key' in df_features.columns:
+        usage_counts = df_features.groupby('usage_type')['material_key'].nunique()
+        total_keys = df_features['material_key'].nunique()
+        for usage, count in usage_counts.items():
+            print(f"  {usage}: {count:,} material_keys ({count/total_keys*100:.1f}%)")
+        print(f"  合計: {total_keys:,} material_keys")
+        print(f"\nusage_typeレコード分布:")
         print(df_features['usage_type'].value_counts())
+    else:
+        if 'usage_type' not in df_features.columns:
+            print("  警告: usage_typeカラムが存在しません")
+        if 'material_key' not in df_features.columns:
+            print("  警告: material_keyカラムが存在しません")
 
     # 2. usage_type別モデル学習
     print(f"\n2. usage_type別モデル学習開始...")
