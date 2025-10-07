@@ -12,24 +12,37 @@ __pycache__/
 *$py.class
 *.so
 
-# Jupyter Notebook
+# Jupyter
 .ipynb_checkpoints
 *.ipynb_checkpoints/
 
-# VSCode設定
+# VSCode
 .vscode/
 
-# データファイル
+# データ/生成物（pushしない）
+output_data/
+data/
 *.csv
 *.xlsx
 *.pkl
 *.pickle
 *.h5
 *.hdf5
+*.parquet
+*.feather
+*.arrow
+*.jsonl
+*.tsv
 
-# ログファイル
+# 画像や重い成果物（pushしない）
+*.png
+*.jpg
+*.jpeg
+*.gif
+
+# ログ
 *.log
 
-# OSファイル
+# OS
 .DS_Store
 Thumbs.db
