@@ -248,7 +248,38 @@ def _add_timeseries_features(_df, window_size_config, start_year, end_year, mode
 
     # 月、曜日の特徴量追加
     df['month_f'] = df['month']
-    df['day_of_week_mon1_f'] = df['file_date'].dt.dayofweek  # 月曜=0
+    df['day_of_week_f'] = df['file_date'].dt.dayofweek.astype('float32')  # 月曜=0
+    df['week_number_f'] = df['file_date'].dt.isocalendar().week.astype('float32')
+
+    # 曜日別過去平均特徴量（新規追加）
+    print("曜日別過去平均特徴量作成中...")
+
+    # material_key × 曜日の過去平均
+    print("  material_dow_mean_f作成中...")
+    df['material_dow_mean_f'] = df.groupby(['material_key', 'day_of_week_f'])['actual_value'].transform(
+        lambda x: x.expanding().mean().shift(1).fillna(0)
+    ).astype('float32')
+
+    # 追加の曜日特徴量
+    if 'product_key' in df.columns:
+        print("  product_dow_mean_f作成中...")
+        df['product_dow_mean_f'] = df.groupby(['product_key', 'day_of_week_f'])['actual_value'].transform(
+            lambda x: x.expanding().mean().shift(1).fillna(0)
+        ).astype('float32')
+
+    if 'store_code' in df.columns:
+        print("  store_dow_mean_f作成中...")
+        df['store_dow_mean_f'] = df.groupby(['store_code', 'day_of_week_f'])['actual_value'].transform(
+            lambda x: x.expanding().mean().shift(1).fillna(0)
+        ).astype('float32')
+
+    if 'usage_type' in df.columns:
+        print("  usage_dow_mean_f作成中...")
+        df['usage_dow_mean_f'] = df.groupby(['usage_type', 'day_of_week_f'])['actual_value'].transform(
+            lambda x: x.expanding().mean().shift(1).fillna(0)
+        ).astype('float32')
+
+    print("曜日別過去平均特徴量作成完了")
 
     return df
 
@@ -296,9 +327,9 @@ def main():
     print("特徴量作成処理開始")
     print("=" * 50)
 
-    # S3からデータ読込
+    # ローカルからデータ読込
     print(f"\n1. データ読込中...")
-    df_input = read_from_s3(bucket_name, input_file_key)
+    df_input = pd.read_parquet('data/df_confirmed_order_input_yamasa_fill_zero.parquet')
     print(f"読込データサイズ: {df_input.shape}")
     print(f"カラム: {list(df_input.columns)}")
 

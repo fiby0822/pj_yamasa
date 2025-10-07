@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 ヤマサ確定注文需要予測システム - 学習・予測
-README.md要件準拠版（保存済み特徴量を使用）
+README.md必須要件準拠版
 """
 
 import pandas as pd
@@ -22,39 +22,54 @@ warnings.filterwarnings('ignore')
 # 環境変数を読み込み
 load_dotenv()
 
-def load_features_from_s3(features_file=None):
-    """S3から保存済み特徴量を読み込む"""
+def create_features_enhanced(df):
+    """強化版特徴量作成（全曜日特徴量）"""
+    print("  強化版特徴量作成中...")
 
-    bucket_name = os.environ.get('AWS_S3_BUCKET_NAME', 'fiby-yamasa-prediction')
+    df = df.sort_values(['material_key', 'file_date'])
 
-    if features_file:
-        # 指定されたファイルを使用
-        if not features_file.startswith('s3://'):
-            features_path = f's3://{bucket_name}/{features_file}'
-        else:
-            features_path = features_file
-    else:
-        # 最新版を使用（デフォルト）
-        features_path = f's3://{bucket_name}/output_data/features/df_features_yamasa_latest.parquet'
+    # 基本的な日付特徴量
+    df['day_of_week_f'] = df['file_date'].dt.dayofweek.astype('float32')
+    df['month_f'] = df['month'].astype('float32')
+    df['week_number_f'] = df['week_number'].astype('float32')
 
-    print(f"特徴量読み込み中: {features_path}")
+    # material_key × 曜日の過去平均（既存）
+    print("    material_dow_mean_f作成中...")
+    df['material_dow_mean_f'] = df.groupby(['material_key', 'day_of_week_f'])['actual_value'].transform(
+        lambda x: x.expanding().mean().shift(1).fillna(0)
+    ).astype('float32')
 
-    try:
-        with smart_open(features_path, 'rb') as f:
-            df_features = pd.read_parquet(f)
+    # 基本的なラグ特徴量
+    for lag in [1, 7]:
+        print(f"    lag_{lag}_f作成中...")
+        df[f'lag_{lag}_f'] = df.groupby('material_key')['actual_value'].shift(lag).fillna(0).astype('float32')
 
-        print(f"特徴量読み込み完了: {df_features.shape}")
-        print(f"データ期間: {df_features['file_date'].min()} ~ {df_features['file_date'].max()}")
+    # 移動平均
+    print("    rolling_mean_7_f作成中...")
+    df['rolling_mean_7_f'] = df.groupby('material_key')['actual_value'].shift(1).transform(
+        lambda x: x.rolling(window=7, min_periods=1).mean()
+    ).fillna(0).astype('float32')
 
-        # 特徴量カラムを特定
-        feature_cols = [col for col in df_features.columns if col.endswith('_f')]
-        print(f"特徴量数: {len(feature_cols)}")
+    # 追加の曜日特徴量（新規）
+    if 'product_key' in df.columns:
+        print("    product_dow_mean_f作成中...")
+        df['product_dow_mean_f'] = df.groupby(['product_key', 'day_of_week_f'])['actual_value'].transform(
+            lambda x: x.expanding().mean().shift(1).fillna(0)
+        ).astype('float32')
 
-        return df_features, feature_cols
+    if 'store_code' in df.columns:
+        print("    store_dow_mean_f作成中...")
+        df['store_dow_mean_f'] = df.groupby(['store_code', 'day_of_week_f'])['actual_value'].transform(
+            lambda x: x.expanding().mean().shift(1).fillna(0)
+        ).astype('float32')
 
-    except Exception as e:
-        print(f"特徴量読み込みエラー: {e}")
-        raise
+    if 'usage_type' in df.columns:
+        print("    usage_dow_mean_f作成中...")
+        df['usage_dow_mean_f'] = df.groupby(['usage_type', 'day_of_week_f'])['actual_value'].transform(
+            lambda x: x.expanding().mean().shift(1).fillna(0)
+        ).astype('float32')
+
+    return df
 
 def calculate_evaluation_metrics(df_test, y_true, y_pred):
     """README.md必須要件に従った評価指標計算"""
@@ -110,20 +125,20 @@ def calculate_evaluation_metrics(df_test, y_true, y_pred):
     metrics = {
         'RMSE': rmse,
         'MAE': mae,
-        'avg_error_rate': avg_error_rate,
-        'median_error_rate': median_error_rate,
-        'within_20pct_count': within_20_count,
-        'within_20pct_ratio': within_20_pct,
-        'within_30pct_count': within_30_count,
-        'within_30pct_ratio': within_30_pct,
-        'within_50pct_count': within_50_count,
-        'within_50pct_ratio': within_50_pct,
-        'total_material_keys': total_mk
+        '誤差率平均値': avg_error_rate,
+        '誤差率中央値': median_error_rate,
+        '20%以内_件数': within_20_count,
+        '20%以内_割合': within_20_pct,
+        '30%以内_件数': within_30_count,
+        '30%以内_割合': within_30_pct,
+        '50%以内_件数': within_50_count,
+        '50%以内_割合': within_50_pct,
+        '総material_key数': total_mk
     }
 
     return metrics, result_df, mk_error_rates
 
-def train_model_and_evaluate(df_features, feature_cols, train_end_date):
+def train_model_and_evaluate(df_features, train_end_date):
     """モデル学習と評価（README.md要件準拠）"""
 
     train_end_dt = pd.to_datetime(train_end_date)
@@ -141,6 +156,7 @@ def train_model_and_evaluate(df_features, feature_cols, train_end_date):
     print(f"    評価データ: {len(df_eval):,}行（既存データがある場合）")
 
     # 特徴量とターゲット
+    feature_cols = [col for col in df_features.columns if col.endswith('_f')]
     print(f"    特徴量数: {len(feature_cols)}")
 
     X_train = df_train[feature_cols].values
@@ -186,11 +202,11 @@ def train_model_and_evaluate(df_features, feature_cols, train_end_date):
         print("\n    【評価結果（既存データでの検証）】")
         print(f"    RMSE: {evaluation_metrics['RMSE']:.2f}")
         print(f"    MAE: {evaluation_metrics['MAE']:.2f}")
-        print(f"    誤差率平均値: {evaluation_metrics['avg_error_rate']:.2%}")
-        print(f"    誤差率中央値: {evaluation_metrics['median_error_rate']:.2%}")
-        print(f"    20%以内: {evaluation_metrics['within_20pct_count']}個 ({evaluation_metrics['within_20pct_ratio']:.1f}%)")
-        print(f"    30%以内: {evaluation_metrics['within_30pct_count']}個 ({evaluation_metrics['within_30pct_ratio']:.1f}%)")
-        print(f"    50%以内: {evaluation_metrics['within_50pct_count']}個 ({evaluation_metrics['within_50pct_ratio']:.1f}%)")
+        print(f"    誤差率平均値: {evaluation_metrics['誤差率平均値']:.2%}")
+        print(f"    誤差率中央値: {evaluation_metrics['誤差率中央値']:.2%}")
+        print(f"    20%以内: {evaluation_metrics['20%以内_件数']}個 ({evaluation_metrics['20%以内_割合']:.1f}%)")
+        print(f"    30%以内: {evaluation_metrics['30%以内_件数']}個 ({evaluation_metrics['30%以内_割合']:.1f}%)")
+        print(f"    50%以内: {evaluation_metrics['50%以内_件数']}個 ({evaluation_metrics['50%以内_割合']:.1f}%)")
 
     # メモリ解放
     del X_train, y_train, df_train
@@ -198,7 +214,7 @@ def train_model_and_evaluate(df_features, feature_cols, train_end_date):
         del X_eval, y_eval, df_eval
     gc.collect()
 
-    return model, importance, evaluation_metrics
+    return model, importance, feature_cols, evaluation_metrics
 
 def predict_future_periods(df_features, model, feature_cols, train_end_date, step_count):
     """step_count月分の将来予測（README.md要件準拠）"""
@@ -263,6 +279,13 @@ def predict_future_periods(df_features, model, feature_cols, train_end_date, ste
             pred_features['day_of_week_f'] = date.dayofweek
             pred_features['month_f'] = date.month
             pred_features['week_number_f'] = date.isocalendar().week
+
+            # 時系列特徴量を適切に更新（ラグ特徴量は最後の実績値を使用）
+            # 注意: 実際の予測では前日の予測値を使うべきだが、
+            # 現在は簡単化のため最新の実績値ベースの特徴量を使用
+
+            # 曜日別過去平均特徴量は日付変化で影響を受ける可能性があるが、
+            # 過去データベースなので基本的には変わらない
 
             # 予測実行
             X_pred = pred_features[feature_cols].values
@@ -386,14 +409,26 @@ def save_results_to_s3(daily_predictions, monthly_summary, importance, model, ev
 
     # 2. material_key別エラー率（既存データがある場合のみ）
     if evaluation_metrics:
-        # 評価結果をCSVで保存（カラム名は英語）
+        # 評価結果をCSVで保存（カラム名を英語に変更）
         bykey_errors_key = f'output_data/predictions/bykey_errors_{timestamp}.csv'
         bykey_errors_path = f's3://{bucket_name}/{bykey_errors_key}'
 
+        # カラム名を英語に変換
         eval_summary = pd.DataFrame([evaluation_metrics])
+        eval_summary_en = eval_summary.rename(columns={
+            '誤差率平均値': 'avg_error_rate',
+            '誤差率中央値': 'median_error_rate',
+            '20%以内_件数': 'within_20pct_count',
+            '20%以内_割合': 'within_20pct_ratio',
+            '30%以内_件数': 'within_30pct_count',
+            '30%以内_割合': 'within_30pct_ratio',
+            '50%以内_件数': 'within_50pct_count',
+            '50%以内_割合': 'within_50pct_ratio',
+            '総material_key数': 'total_material_keys'
+        })
 
         with smart_open(bykey_errors_path, 'w') as f:
-            eval_summary.to_csv(f, index=False)
+            eval_summary_en.to_csv(f, index=False)
         print(f"  ✓ エラー率: {bykey_errors_path}")
 
     # 3. 特徴量重要度（feature_importance_*.csv）- Tableau読み込み対応、全件出力
@@ -427,13 +462,27 @@ def save_results_to_s3(daily_predictions, monthly_summary, importance, model, ev
         metrics_key = f'output_data/predictions/metrics_{timestamp}.json'
         metrics_path = f's3://{bucket_name}/{metrics_key}'
 
-        # NaN値をNoneに変換
+        # NaN値をNoneに変換し、カラム名を英語に変換
         clean_metrics = {}
+        column_mapping = {
+            '誤差率平均値': 'avg_error_rate',
+            '誤差率中央値': 'median_error_rate',
+            '20%以内_件数': 'within_20pct_count',
+            '20%以内_割合': 'within_20pct_ratio',
+            '30%以内_件数': 'within_30pct_count',
+            '30%以内_割合': 'within_30pct_ratio',
+            '50%以内_件数': 'within_50pct_count',
+            '50%以内_割合': 'within_50pct_ratio',
+            '総material_key数': 'total_material_keys'
+        }
+
         for k, v in evaluation_metrics.items():
+            # カラム名を英語に変換
+            key = column_mapping.get(k, k)
             if pd.isna(v):
-                clean_metrics[k] = None
+                clean_metrics[key] = None
             else:
-                clean_metrics[k] = float(v) if isinstance(v, np.number) else v
+                clean_metrics[key] = float(v) if isinstance(v, np.number) else v
 
         with smart_open(metrics_path, 'w') as f:
             json.dump(clean_metrics, f, indent=2, ensure_ascii=False)
@@ -453,9 +502,6 @@ def main():
     parser = argparse.ArgumentParser(description='ヤマサ確定注文需要予測 - 学習・予測')
     parser.add_argument('--train-end-date', default='2024-12-31', help='学習データの終了日')
     parser.add_argument('--step-count', type=int, default=6, help='予測ステップ数（月単位）')
-    parser.add_argument('--features-file', help='特定の特徴量ファイルを指定')
-    parser.add_argument('--no-saved-features', action='store_true', help='保存済み特徴量を使用しない')
-    parser.add_argument('--is-use-saved-features', action='store_true', help='保存済み特徴量を使用（デフォルト）')
 
     args = parser.parse_args()
 
@@ -472,21 +518,45 @@ def main():
     print(f"  予測ステップ数: {step_count}ヶ月")
     print(f"  予測期間: 2025/01 ~ 2025/{step_count:02d}")
 
-    # 特徴量読み込み
+    # データ読み込み
+    print("\nデータ読み込み中...")
+    df = pd.read_parquet('data/df_confirmed_order_input_yamasa_fill_zero.parquet')
+
+    print(f"元データサイズ: {df.shape}")
+
+    # 必要な期間のデータのみ
+    df['file_date'] = pd.to_datetime(df['file_date'])
+    train_end_dt = pd.to_datetime(train_end_date)
+    data_start_dt = train_end_dt - pd.DateOffset(months=12)  # 学習用に1年分
+    data_end_dt = pd.to_datetime("2025-06-30")  # 評価用データ期間まで
+
+    df_filtered = df[(df['file_date'] >= data_start_dt) & (df['file_date'] <= data_end_dt)].copy()
+    del df
+    gc.collect()
+
+    print(f"フィルタリング後: {df_filtered.shape}")
+    print(f"データ期間: {df_filtered['file_date'].min().date()} ~ {df_filtered['file_date'].max().date()}")
+
+    # メモリ最適化
+    for col in df_filtered.columns:
+        if df_filtered[col].dtype == 'object' and col != 'file_date':
+            df_filtered[col] = df_filtered[col].astype('category')
+        elif df_filtered[col].dtype == 'float64':
+            df_filtered[col] = df_filtered[col].astype('float32')
+
+    # 特徴量作成
     print("\n" + "-"*80)
-    print("特徴量読み込み")
+    print("特徴量作成")
     print("-"*80)
 
-    df_features, feature_cols = load_features_from_s3(args.features_file)
-
-    print(f"データ期間: {df_features['file_date'].min().date()} ~ {df_features['file_date'].max().date()}")
+    df_enhanced = create_features_enhanced(df_filtered.copy())
 
     # モデル学習と評価
     print("\n" + "-"*80)
     print("モデル学習・評価")
     print("-"*80)
 
-    model, importance, evaluation_metrics = train_model_and_evaluate(df_features, feature_cols, train_end_date)
+    model, importance, feature_cols, evaluation_metrics = train_model_and_evaluate(df_enhanced, train_end_date)
 
     # 将来予測
     print("\n" + "-"*80)
@@ -494,8 +564,12 @@ def main():
     print("-"*80)
 
     daily_predictions, monthly_summary = predict_future_periods(
-        df_features, model, feature_cols, train_end_date, step_count
+        df_enhanced, model, feature_cols, train_end_date, step_count
     )
+
+    # df_enhancedは後でS3保存時に使用するため、まだ削除しない
+    del df_filtered
+    gc.collect()
 
     # 結果表示
     print("\n" + "="*90)
@@ -534,7 +608,7 @@ def main():
     if not daily_predictions.empty:
         s3_paths = save_results_to_s3(
             daily_predictions, monthly_summary, importance, model,
-            evaluation_metrics, timestamp, train_end_date, step_count, df_features
+            evaluation_metrics, timestamp, train_end_date, step_count, df_enhanced
         )
 
         print("\n" + "="*90)
