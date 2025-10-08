@@ -1,24 +1,19 @@
 # 環境変数
 .env
-
 # Python仮想環境
 venv/
 env/
 ENV/
-
 # Pythonキャッシュ
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
-
 # Jupyter
 .ipynb_checkpoints
 *.ipynb_checkpoints/
-
 # VSCode
 .vscode/
-
 # データ/生成物（pushしない）
 output_data/
 data/
@@ -33,16 +28,13 @@ data/
 *.arrow
 *.jsonl
 *.tsv
-
 # 画像や重い成果物（pushしない）
 *.png
 *.jpg
 *.jpeg
 *.gif
-
 # ログ
 *.log
-
 # OS
 .DS_Store
 Thumbs.db
