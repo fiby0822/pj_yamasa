@@ -35,6 +35,21 @@ data/
 *.gif
 # ログ
 *.log
+logs/
+train_output.log
+prepare_log.txt
 # OS
 .DS_Store
 Thumbs.db
+
+# Temporary and test files
+test_*.py
+*_test.py
+*_debug.py
+*_sample.py
+*_backup.*
+README_backup.md
+CHANGES.md
+
+# Notebooks (ローカルのJupyter notebookは除外)
+notebooks/*.ipynb
