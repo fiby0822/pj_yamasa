@@ -31,6 +31,21 @@ class TimeSeriesPredictor:
         self.bucket_name = bucket_name
         self.model_type = model_type
         self.s3_client = boto3.client('s3')
+        # GPU availability check
+        self.gpu_available = self._check_gpu_availability()
+
+    def _check_gpu_availability(self) -> bool:
+        """Check if GPU is available for XGBoost"""
+        try:
+            import subprocess
+            result = subprocess.run(['nvidia-smi'], capture_output=True, text=True)
+            if result.returncode == 0:
+                print("GPU detected - will use GPU acceleration")
+                return True
+        except:
+            pass
+        print("No GPU detected - using CPU")
+        return False
 
     def train_test_predict_time_split(
         self,
@@ -99,6 +114,9 @@ class TimeSeriesPredictor:
 
         # 日付列の準備
         df = _df_features.copy()
+
+        # メモリ最適化
+        df = self._optimize_memory(df)
 
         # file_dateをdateとして使用
         if 'file_date' in df.columns and 'date' not in df.columns:
@@ -250,8 +268,8 @@ class TimeSeriesPredictor:
                     if isinstance(value, (int, float)):
                         print(f"{metric}: {value:.4f}")
 
-        # モデルの保存
-        if save_dir and model_last is not None:
+        # モデルの保存（save_dirが指定されていない場合もデフォルトで保存）
+        if model_last is not None:
             self._save_model_to_s3(model_last, best_params, save_dir)
 
         return df_pred_all, bykey_df, imp_last, best_params, model_last, all_metrics
@@ -274,6 +292,28 @@ class TimeSeriesPredictor:
                     feature_cols.append(col)
 
         return feature_cols
+
+    def _optimize_memory(self, df: pd.DataFrame) -> pd.DataFrame:
+        """メモリ使用量を最適化（float64→float32, int64→int32）"""
+        print("メモリ最適化中...")
+        original_memory = df.memory_usage(deep=True).sum() / 1024 ** 2
+
+        # Float型の最適化
+        float_cols = df.select_dtypes(include=['float64']).columns
+        for col in float_cols:
+            df[col] = df[col].astype('float32')
+
+        # Int型の最適化
+        int_cols = df.select_dtypes(include=['int64']).columns
+        for col in int_cols:
+            if df[col].min() >= -2147483648 and df[col].max() <= 2147483647:
+                df[col] = df[col].astype('int32')
+
+        optimized_memory = df.memory_usage(deep=True).sum() / 1024 ** 2
+        reduction_pct = (original_memory - optimized_memory) / original_memory * 100
+        print(f"メモリ削減: {original_memory:.1f} MB → {optimized_memory:.1f} MB ({reduction_pct:.1f}%削減)")
+
+        return df
 
     def _handle_outliers(
         self,
@@ -370,7 +410,10 @@ class TimeSeriesPredictor:
         return best_params
 
     def _get_default_params(self, use_gpu: bool) -> Dict[str, Any]:
-        """デフォルトパラメータ"""
+        """デフォルトパラメータ（GPU自動検出対応）"""
+        # GPU availability check
+        gpu_enabled = use_gpu or self.gpu_available
+
         params = {
             'n_estimators': 500,
             'max_depth': 6,
@@ -383,9 +426,11 @@ class TimeSeriesPredictor:
             'reg_lambda': 0.1,
         }
 
-        if use_gpu:
+        if gpu_enabled:
             params['tree_method'] = 'gpu_hist'
             params['predictor'] = 'gpu_predictor'
+            params['device'] = 'cuda'
+            print("GPU acceleration enabled for XGBoost")
 
         return params
 

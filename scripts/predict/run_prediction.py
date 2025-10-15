@@ -22,6 +22,10 @@ def main():
                         help='予測開始日 (YYYY-MM-DD)')
     parser.add_argument('--end-date', type=str, default=None,
                         help='予測終了日 (YYYY-MM-DD)')
+    parser.add_argument('--step-count', type=int, default=1,
+                        help='予測する月数 (futureモード用、デフォルト: 1)')
+    parser.add_argument('--train-end-date', type=str, default='2024-12-31',
+                        help='学習データの終了日 (YYYY-MM-DD)')
     parser.add_argument('--target-date', type=str, default=None,
                         help='予測対象日 (single-dateモード用)')
     parser.add_argument('--material-keys', type=str, nargs='+', default=None,
@@ -71,19 +75,16 @@ def main():
     # モードに応じた予測の実行
     if args.mode == 'future':
         # 将来予測モード
-        if args.start_date is None or args.end_date is None:
-            # デフォルト: 次の2週間
-            start_date = datetime.now().strftime('%Y-%m-%d')
-            end_date = (datetime.now() + timedelta(days=14)).strftime('%Y-%m-%d')
-        else:
-            start_date = args.start_date
-            end_date = args.end_date
+        print(f"\n将来予測を実行")
+        print(f"  学習データ終了日: {args.train_end_date}")
+        print(f"  予測月数: {args.step_count}")
 
-        print(f"\n将来予測を実行: {start_date} ~ {end_date}")
         predictions = predictor.predict_future(
             df=df,
-            start_date=start_date,
-            end_date=end_date,
+            start_date=args.start_date,
+            end_date=args.end_date,
+            step_count=args.step_count,
+            train_end_date=args.train_end_date,
             model=models[args.model_period],
             save_results=args.save_results
         )

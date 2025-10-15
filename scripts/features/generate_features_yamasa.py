@@ -49,7 +49,7 @@ def main():
             end_year=2025,
             train_end_date="2024-12-31",
             window_size_config=WINDOW_SIZE_CONFIG,
-            save_format="parquet",
+            save_format="both",  # ParquetとCSVの両方で保存
             create_latest=True
         )
 
@@ -71,8 +71,12 @@ def main():
             print(f"   - {col}: {nan_rate:.2f}%")
 
         print(f"\n5. S3への保存完了")
-        print(f"   タイムスタンプ付き: output/features/confirmed_order_demand_yamasa_features_*.parquet")
-        print(f"   最新版: output/features/confirmed_order_demand_yamasa_features_latest.parquet")
+        print(f"   タイムスタンプ付き:")
+        print(f"     - output/features/confirmed_order_demand_yamasa_features_*.parquet")
+        print(f"     - output/features/confirmed_order_demand_yamasa_features_*.csv")
+        print(f"   最新版:")
+        print(f"     - output/features/confirmed_order_demand_yamasa_features_latest.parquet")
+        print(f"     - output/features/confirmed_order_demand_yamasa_features_latest.csv")
 
     except Exception as e:
         print(f"エラー: 特徴量生成に失敗しました - {e}")

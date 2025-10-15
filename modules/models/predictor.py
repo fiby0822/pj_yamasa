@@ -6,6 +6,7 @@
 import gc
 import warnings
 from datetime import datetime, timedelta
+from dateutil.relativedelta import relativedelta
 from typing import Dict, List, Optional, Tuple, Any, Union
 import pandas as pd
 import numpy as np
@@ -52,29 +53,43 @@ class DemandPredictor:
         loaded_models = {}
 
         for period_num in period_numbers:
-            try:
-                # 最新モデルのキー
-                model_key = f"output/models/{self.model_type}_model_period{period_num}_latest.pkl"
+            model_loaded = False
 
-                # S3からモデルをダウンロード
-                response = self.s3_client.get_object(
-                    Bucket=self.bucket_name,
-                    Key=model_key
-                )
+            # 最新モデルのキー（period番号なしのパターンも試す）
+            if period_num == 1:
+                # Period 1の場合は両方のパターンを試す
+                model_keys = [
+                    f"output/models/{self.model_type}_model_latest.pkl",  # 新しいパターン
+                    f"output/models/{self.model_type}_model_period{period_num}_latest.pkl"  # 古いパターン
+                ]
+            else:
+                model_keys = [f"output/models/{self.model_type}_model_period{period_num}_latest.pkl"]
 
-                # モデルをロード
-                model_data = response['Body'].read()
-                model = pickle.loads(model_data)
-                loaded_models[period_num] = model
+            for model_key in model_keys:
+                try:
+                    # S3からモデルをダウンロード
+                    response = self.s3_client.get_object(
+                        Bucket=self.bucket_name,
+                        Key=model_key
+                    )
 
-                print(f"モデルをロードしました: Period {period_num}")
+                    # モデルをロード
+                    model_data = response['Body'].read()
+                    model = pickle.loads(model_data)
+                    loaded_models[period_num] = model
+                    model_loaded = True
 
-            except self.s3_client.exceptions.NoSuchKey:
+                    print(f"モデルをロードしました: Period {period_num} (from {model_key})")
+                    break  # 成功したらループを抜ける
+
+                except self.s3_client.exceptions.NoSuchKey:
+                    continue  # 次のキーを試す
+                except Exception as e:
+                    print(f"Error: モデルのロードに失敗しました ({model_key}): {e}")
+                    continue
+
+            if not model_loaded:
                 print(f"Warning: モデルが見つかりません: Period {period_num}")
-                continue
-            except Exception as e:
-                print(f"Error: モデルのロードに失敗しました (Period {period_num}): {e}")
-                continue
 
         self.models = loaded_models
         return loaded_models
@@ -190,8 +205,10 @@ class DemandPredictor:
     def predict_future(
         self,
         df: pd.DataFrame,
-        start_date: str,
-        end_date: str,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        step_count: int = 1,
+        train_end_date: str = "2024-12-31",
         model: Optional[xgb.XGBRegressor] = None,
         feature_cols: Optional[List[str]] = None,
         save_results: bool = True
@@ -203,10 +220,14 @@ class DemandPredictor:
         -----------
         df : pd.DataFrame
             特徴量データ
-        start_date : str
-            予測開始日
-        end_date : str
-            予測終了日
+        start_date : str, optional
+            予測開始日（指定がない場合はtrain_end_dateの翌月初）
+        end_date : str, optional
+            予測終了日（指定がない場合はstep_countに基づいて計算）
+        step_count : int
+            予測する月数（デフォルト: 1）
+        train_end_date : str
+            学習データの終了日（デフォルト: "2024-12-31"）
         model : xgb.XGBRegressor, optional
             使用するモデル
         feature_cols : List[str], optional
@@ -219,18 +240,33 @@ class DemandPredictor:
         pd.DataFrame
             予測結果
         """
-        start = pd.to_datetime(start_date)
-        end = pd.to_datetime(end_date)
+        from dateutil.relativedelta import relativedelta
+
+        # 日付の計算
+        train_end = pd.to_datetime(train_end_date)
+
+        # start_dateとend_dateが指定されていない場合、step_countに基づいて設定
+        if start_date is None:
+            # train_end_dateの翌月初（例: 2024-12-31 → 2025-01-01）
+            start = train_end + timedelta(days=1)
+        else:
+            start = pd.to_datetime(start_date)
+
+        if end_date is None:
+            # step_count月後の月末まで（例: step_count=1なら2025-01-31まで）
+            end = train_end + relativedelta(months=step_count)
+        else:
+            end = pd.to_datetime(end_date)
 
         # 予測期間のデータをフィルタ
         df['date'] = pd.to_datetime(df['date'])
         prediction_df = df[(df['date'] >= start) & (df['date'] <= end)].copy()
 
         if len(prediction_df) == 0:
-            print(f"Warning: {start_date} から {end_date} の期間にデータがありません")
+            print(f"Warning: {start.strftime('%Y-%m-%d')} から {end.strftime('%Y-%m-%d')} の期間にデータがありません")
             return pd.DataFrame()
 
-        print(f"予測期間: {start_date} ~ {end_date}")
+        print(f"予測期間: {start.strftime('%Y-%m-%d')} ~ {end.strftime('%Y-%m-%d')}")
         print(f"予測対象: {len(prediction_df)} レコード")
 
         # 予測実行
@@ -242,7 +278,7 @@ class DemandPredictor:
 
         # 結果の保存
         if save_results:
-            self._save_predictions_to_s3(result_df, start_date, end_date)
+            self._save_predictions_to_s3(result_df, start.strftime('%Y-%m-%d'), end.strftime('%Y-%m-%d'))
 
         return result_df
 
@@ -395,20 +431,37 @@ class DemandPredictor:
             Body=buffer.getvalue()
         )
 
-        print(f"予測結果を保存しました:")
+        print(f"予測結果を保存しました (Parquet):")
         print(f"  - s3://{self.bucket_name}/{output_key}")
+        print(f"  - s3://{self.bucket_name}/{latest_key}")
 
         # CSVでも保存（確認用）
         csv_buffer = BytesIO()
         predictions_df.to_csv(csv_buffer, index=False, encoding='utf-8')
-        csv_key = output_key.replace('.parquet', '.csv')
+        csv_buffer.seek(0)
 
+        # タイムスタンプ付きCSVファイル
+        csv_key = output_key.replace('.parquet', '.csv')
         self.s3_client.put_object(
             Bucket=self.bucket_name,
             Key=csv_key,
             Body=csv_buffer.getvalue(),
             ContentType='text/csv'
         )
+
+        # 最新版CSVファイル
+        csv_latest_key = latest_key.replace('.parquet', '.csv')
+        csv_buffer.seek(0)
+        self.s3_client.put_object(
+            Bucket=self.bucket_name,
+            Key=csv_latest_key,
+            Body=csv_buffer.getvalue(),
+            ContentType='text/csv'
+        )
+
+        print(f"予測結果を保存しました (CSV):")
+        print(f"  - s3://{self.bucket_name}/{csv_key}")
+        print(f"  - s3://{self.bucket_name}/{csv_latest_key}")
 
 
 class ModelInference:

@@ -63,6 +63,12 @@ class ModelEvaluator:
             'predicted': results['predictions']
         })
 
+        # 追加カラムがある場合は追加
+        if 'is_over_48_thre' in results:
+            pred_df['is_over_48_thre'] = results['is_over_48_thre']
+        if 'actual_value_count' in results:
+            pred_df['actual_value_count'] = results['actual_value_count']
+
         pred_df['error'] = pred_df['predicted'] - pred_df['actual']
         pred_df['abs_error'] = np.abs(pred_df['error'])
         pred_df['percentage_error'] = (pred_df['abs_error'] / (pred_df['actual'] + 1e-10)) * 100
@@ -185,6 +191,68 @@ class ModelEvaluator:
         }
 
         return metrics
+
+    def _create_material_summary(self, pred_df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Material Key × Year-Month の集計データを作成
+
+        Parameters:
+        -----------
+        pred_df : pd.DataFrame
+            予測結果のDataFrame
+
+        Returns:
+        --------
+        pd.DataFrame
+            集計結果
+        """
+        try:
+            # DataFrameのコピーを作成
+            df = pred_df.copy()
+
+            # dateをdatetime型に変換
+            df['date'] = pd.to_datetime(df['date'])
+
+            # Year-Monthカラムを作成
+            df['predict_year_month'] = df['date'].dt.strftime('%Y-%m')
+
+            # Material Key × Year-Month でグループ化して集計
+            summary = df.groupby(['material_key', 'predict_year_month']).agg({
+                'actual': [
+                    ('actual_value_count', lambda x: (x > 0).sum()),  # 実績値>0の件数
+                    ('actual_value_mean', 'mean')  # 実績値平均
+                ],
+                'predicted': [
+                    ('predict_value_mean', 'mean')  # 予測値平均
+                ],
+                'error': [
+                    ('error_value_mean', 'mean')  # 平均誤差（予測値 - 実績値）
+                ]
+            }).reset_index()
+
+            # カラム名をフラット化
+            summary.columns = [
+                'material_key',
+                'predict_year_month',
+                'actual_value_count',
+                'actual_value_mean',
+                'predict_value_mean',
+                'error_value_mean'
+            ]
+
+            # 数値を適切な精度に丸める
+            summary['actual_value_mean'] = summary['actual_value_mean'].round(2)
+            summary['predict_value_mean'] = summary['predict_value_mean'].round(2)
+            summary['error_value_mean'] = summary['error_value_mean'].round(2)
+
+            # ソート
+            summary = summary.sort_values(['material_key', 'predict_year_month'])
+
+            return summary
+
+        except Exception as e:
+            print(f"Warning: Material集計の作成に失敗しました: {e}")
+            return None
 
     def _analyze_error_distribution(self, pred_df: pd.DataFrame) -> Dict[str, Any]:
         """エラー分布の分析"""
@@ -365,6 +433,30 @@ class ModelEvaluator:
                 ContentType='text/csv'
             )
 
+            # Material Key × Year-Month集計CSVの作成と保存
+            summary_df = self._create_material_summary(evaluation['prediction_df'])
+            if summary_df is not None:
+                summary_buffer = StringIO()
+                summary_df.to_csv(summary_buffer, index=False)
+                summary_key = f"output/evaluation/{self.model_type}_material_summary_{timestamp}.csv"
+                latest_summary_key = f"output/evaluation/{self.model_type}_material_summary_latest.csv"
+
+                self.s3_client.put_object(
+                    Bucket=self.bucket_name,
+                    Key=summary_key,
+                    Body=summary_buffer.getvalue(),
+                    ContentType='text/csv'
+                )
+
+                self.s3_client.put_object(
+                    Bucket=self.bucket_name,
+                    Key=latest_summary_key,
+                    Body=summary_buffer.getvalue(),
+                    ContentType='text/csv'
+                )
+
+                print(f"  - Material集計: s3://{self.bucket_name}/{summary_key}")
+
         # メトリクスのJSON保存
         metrics_to_save = {
             'overall_metrics': evaluation.get('overall_metrics', {}),
@@ -412,11 +504,39 @@ def display_evaluation_summary(evaluation: Dict[str, Any]):
     if 'overall_metrics' in evaluation:
         print("\n【全体評価指標】")
         metrics = evaluation['overall_metrics']
-        print(f"  RMSE: {metrics.get('RMSE', 'N/A'):.4f}")
-        print(f"  MAE: {metrics.get('MAE', 'N/A'):.4f}")
-        print(f"  MAPE: {metrics.get('MAPE', 'N/A'):.2f}%")
-        print(f"  R2 Score: {metrics.get('R2', 'N/A'):.4f}")
-        print(f"  相関係数: {metrics.get('Correlation', 'N/A'):.4f}")
+
+        # 各メトリクスを安全に処理
+        rmse = metrics.get('RMSE', 'N/A')
+        mae = metrics.get('MAE', 'N/A')
+        mape = metrics.get('MAPE', 'N/A')
+        r2 = metrics.get('R2', 'N/A')
+        corr = metrics.get('Correlation', 'N/A')
+
+        # フォーマット出力（値がN/Aの場合はそのまま出力）
+        if rmse != 'N/A':
+            print(f"  RMSE: {rmse:.4f}")
+        else:
+            print(f"  RMSE: {rmse}")
+
+        if mae != 'N/A':
+            print(f"  MAE: {mae:.4f}")
+        else:
+            print(f"  MAE: {mae}")
+
+        if mape != 'N/A':
+            print(f"  MAPE: {mape:.2f}%")
+        else:
+            print(f"  MAPE: {mape}")
+
+        if r2 != 'N/A':
+            print(f"  R2 Score: {r2:.4f}")
+        else:
+            print(f"  R2 Score: {r2}")
+
+        if corr != 'N/A':
+            print(f"  相関係数: {corr:.4f}")
+        else:
+            print(f"  相関係数: {corr}")
 
     # エラー分布
     if 'error_distribution' in evaluation:

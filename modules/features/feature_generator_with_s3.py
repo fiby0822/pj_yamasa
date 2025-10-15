@@ -29,7 +29,7 @@ class FeatureGeneratorWithS3:
         end_year: int = 2025,
         train_end_date: Optional[str] = "2024-12-31",
         window_size_config: Optional[Dict[str, Any]] = None,
-        save_format: str = "parquet",
+        save_format: str = "both",
         create_latest: bool = True
     ) -> pd.DataFrame:
         """
@@ -43,7 +43,7 @@ class FeatureGeneratorWithS3:
             end_year: 出力データの終了年
             train_end_date: 学習データの終了日
             window_size_config: ウィンドウサイズ設定（Noneの場合はデフォルト使用）
-            save_format: 保存形式（"parquet" または "csv"）
+            save_format: 保存形式（"parquet", "csv", "both"）
             create_latest: _latestファイルも作成するか
 
         Returns:
@@ -65,26 +65,38 @@ class FeatureGeneratorWithS3:
         # output_keyが指定されていない場合は自動生成
         if output_key is None:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            output_key = f"output/features/{model_type}_features_{timestamp}.{save_format}"
+            output_key_base = f"output/features/{model_type}_features_{timestamp}"
+        else:
+            # 拡張子を除いたベース名を取得
+            output_key_base = output_key.rsplit('.', 1)[0] if '.' in output_key else output_key
 
         # S3に保存（タイムスタンプ付き）
-        if save_format == "parquet":
-            self.s3_handler.write_parquet(df_features, output_key)
-        elif save_format == "csv":
-            self.s3_handler.write_csv(df_features, output_key)
-        else:
-            raise ValueError(f"Unsupported save format: {save_format}")
+        if save_format in ["parquet", "both"]:
+            parquet_key = f"{output_key_base}.parquet"
+            self.s3_handler.write_parquet(df_features, parquet_key)
+            print(f"Features saved to S3 (Parquet): s3://{self.s3_handler.bucket_name}/{parquet_key}")
 
-        print(f"Features saved to S3: s3://{self.s3_handler.bucket_name}/{output_key}")
+        if save_format in ["csv", "both"]:
+            csv_key = f"{output_key_base}.csv"
+            self.s3_handler.write_csv(df_features, csv_key)
+            print(f"Features saved to S3 (CSV): s3://{self.s3_handler.bucket_name}/{csv_key}")
+
+        if save_format not in ["parquet", "csv", "both"]:
+            raise ValueError(f"Unsupported save format: {save_format}")
 
         # _latestファイルも作成
         if create_latest:
-            latest_key = f"output/features/{model_type}_features_latest.{save_format}"
-            if save_format == "parquet":
-                self.s3_handler.write_parquet(df_features, latest_key)
-            elif save_format == "csv":
-                self.s3_handler.write_csv(df_features, latest_key)
-            print(f"Latest file saved to S3: s3://{self.s3_handler.bucket_name}/{latest_key}")
+            latest_key_base = f"output/features/{model_type}_features_latest"
+
+            if save_format in ["parquet", "both"]:
+                latest_parquet_key = f"{latest_key_base}.parquet"
+                self.s3_handler.write_parquet(df_features, latest_parquet_key)
+                print(f"Latest file saved to S3 (Parquet): s3://{self.s3_handler.bucket_name}/{latest_parquet_key}")
+
+            if save_format in ["csv", "both"]:
+                latest_csv_key = f"{latest_key_base}.csv"
+                self.s3_handler.write_csv(df_features, latest_csv_key)
+                print(f"Latest file saved to S3 (CSV): s3://{self.s3_handler.bucket_name}/{latest_csv_key}")
 
         print(f"Shape: {df_features.shape}")
 
