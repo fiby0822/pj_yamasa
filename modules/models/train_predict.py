@@ -549,7 +549,7 @@ class TimeSeriesPredictor:
         重要なMaterial Keyのみにフィルタリング
 
         条件:
-        1. 上位3000個のmaterial_key（取引量ベース）
+        1. 実績発生数上位7000個のmaterial_key（actual_value>0のレコード数ベース）
         2. テストデータに含まれるmaterial_keyのうち、actual_value>0のレコードがstep_count*4以上
 
         Parameters:
@@ -577,10 +577,20 @@ class TimeSeriesPredictor:
             print("\n===== Material Keyフィルタリング =====")
             print(f"フィルタリング前: {original_count:,}行, {original_keys:,} Material Keys")
 
-        # 1. 取引量上位3000個のMaterial Keyを取得
-        mk_totals = df.groupby('material_key')[target_col].sum().reset_index()
-        mk_totals.columns = ['material_key', 'total_value']
-        top_3000_keys = mk_totals.nlargest(3000, 'total_value')['material_key'].values
+        # 1. 実績発生数上位7000個のMaterial Keyを取得
+        # actual_value > 0 のレコード数をカウント
+        mk_active_counts_all = df[df[target_col] > 0].groupby('material_key').size().reset_index(name='active_count')
+
+        # 全体の実績発生数を計算（カバー率計算用）
+        total_active_records = df[df[target_col] > 0].shape[0]
+
+        # 上位7000個を選択
+        top_7000_mk = mk_active_counts_all.nlargest(7000, 'active_count')
+        top_7000_keys = top_7000_mk['material_key'].values
+
+        # カバー率の計算
+        top_7000_active_count = top_7000_mk['active_count'].sum()
+        coverage_rate = (top_7000_active_count / total_active_records) * 100 if total_active_records > 0 else 0
 
         # 2. テストデータ期間の計算
         train_end = pd.to_datetime(train_end_date)
@@ -598,12 +608,15 @@ class TimeSeriesPredictor:
         active_keys = mk_active_counts[mk_active_counts >= min_active_records].index.values
 
         # 条件を満たすMaterial Keyの和集合
-        selected_keys = set(top_3000_keys) | set(active_keys)
+        selected_keys = set(top_7000_keys) | set(active_keys)
 
         if verbose:
-            print(f"  上位3000個のMaterial Key: {len(top_3000_keys):,}個")
+            print(f"  実績発生数上位7000個のMaterial Key: {len(top_7000_keys):,}個")
+            print(f"    - 全体の実績発生数: {total_active_records:,}レコード")
+            print(f"    - 上位7000個の実績発生数: {top_7000_active_count:,}レコード")
+            print(f"    - カバー率: {coverage_rate:.1f}%")
             print(f"  テスト期間でアクティブなMaterial Key: {len(active_keys):,}個")
-            print(f"  （actual_value>0が{min_active_records}レコード以上）")
+            print(f"    （actual_value>0が{min_active_records}レコード以上）")
             print(f"  選択されたMaterial Key数: {len(selected_keys):,}個")
 
         # フィルタリング実行
