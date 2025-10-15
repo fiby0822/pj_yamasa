@@ -56,9 +56,9 @@ class TimeSeriesPredictor:
         feature_cols: Optional[List[str]] = None,
         use_optuna: bool = False,
         n_trials: int = 50,
-        apply_winsorization: bool = True,
+        apply_winsorization: bool = False,
         winsorize_limits: Tuple[float, float] = (0.01, 0.01),
-        apply_hampel: bool = True,
+        apply_hampel: bool = False,
         hampel_window: int = 3,
         hampel_threshold: float = 3.0,
         use_gpu: bool = False,
@@ -126,6 +126,9 @@ class TimeSeriesPredictor:
 
         df['date'] = pd.to_datetime(df['date'])
         df = df.sort_values(['material_key', 'date'])
+
+        # Material Keyのフィルタリング処理を追加
+        df = self._filter_important_material_keys(df, train_end_date, target_col, step_count, verbose)
 
         # 特徴量列の自動検出
         if feature_cols is None:
@@ -533,3 +536,96 @@ class TimeSeriesPredictor:
         )
 
         print(f"モデルをS3に保存しました: s3://{self.bucket_name}/{model_key}")
+
+    def _filter_important_material_keys(
+        self,
+        df: pd.DataFrame,
+        train_end_date: str,
+        target_col: str,
+        step_count: int,
+        verbose: bool = True
+    ) -> pd.DataFrame:
+        """
+        重要なMaterial Keyのみにフィルタリング
+
+        条件:
+        1. 上位3000個のmaterial_key（取引量ベース）
+        2. テストデータに含まれるmaterial_keyのうち、actual_value>0のレコードがstep_count*4以上
+
+        Parameters:
+        -----------
+        df : pd.DataFrame
+            入力データ
+        train_end_date : str
+            学習データの終了日
+        target_col : str
+            予測対象列名
+        step_count : int
+            予測する月数
+        verbose : bool
+            詳細出力フラグ
+
+        Returns:
+        --------
+        pd.DataFrame
+            フィルタリング後のデータ
+        """
+        original_count = len(df)
+        original_keys = df['material_key'].nunique()
+
+        if verbose:
+            print("\n===== Material Keyフィルタリング =====")
+            print(f"フィルタリング前: {original_count:,}行, {original_keys:,} Material Keys")
+
+        # 1. 取引量上位3000個のMaterial Keyを取得
+        mk_totals = df.groupby('material_key')[target_col].sum().reset_index()
+        mk_totals.columns = ['material_key', 'total_value']
+        top_3000_keys = mk_totals.nlargest(3000, 'total_value')['material_key'].values
+
+        # 2. テストデータ期間の計算
+        train_end = pd.to_datetime(train_end_date)
+        test_start = train_end + timedelta(days=1)
+        test_end = train_end + relativedelta(months=step_count)
+
+        # テストデータ期間のデータ
+        test_period_df = df[(df['date'] >= test_start) & (df['date'] <= test_end)]
+
+        # actual_value > 0のレコード数を計算
+        mk_active_counts = test_period_df[test_period_df[target_col] > 0].groupby('material_key').size()
+
+        # step_count * 4以上のアクティブなレコードがあるMaterial Key
+        min_active_records = step_count * 4
+        active_keys = mk_active_counts[mk_active_counts >= min_active_records].index.values
+
+        # 条件を満たすMaterial Keyの和集合
+        selected_keys = set(top_3000_keys) | set(active_keys)
+
+        if verbose:
+            print(f"  上位3000個のMaterial Key: {len(top_3000_keys):,}個")
+            print(f"  テスト期間でアクティブなMaterial Key: {len(active_keys):,}個")
+            print(f"  （actual_value>0が{min_active_records}レコード以上）")
+            print(f"  選択されたMaterial Key数: {len(selected_keys):,}個")
+
+        # フィルタリング実行
+        df_filtered = df[df['material_key'].isin(selected_keys)]
+
+        # メモリ削減効果の計算
+        filtered_count = len(df_filtered)
+        filtered_keys = df_filtered['material_key'].nunique()
+        reduction_rate = (1 - filtered_count / original_count) * 100
+
+        if verbose:
+            print(f"\nフィルタリング後: {filtered_count:,}行, {filtered_keys:,} Material Keys")
+            print(f"データ削減率: {reduction_rate:.1f}%")
+
+            # メモリ使用量の推定
+            original_memory = df.memory_usage(deep=True).sum() / 1024**2
+            filtered_memory = df_filtered.memory_usage(deep=True).sum() / 1024**2
+            memory_reduction = (1 - filtered_memory / original_memory) * 100
+            print(f"メモリ削減: {original_memory:.1f}MB → {filtered_memory:.1f}MB ({memory_reduction:.1f}%削減)")
+
+        # ガベージコレクション
+        del df
+        gc.collect()
+
+        return df_filtered

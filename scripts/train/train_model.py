@@ -22,8 +22,8 @@ def main():
                         help='Optunaでハイパーパラメータ最適化を実行')
     parser.add_argument('--n-trials', type=int, default=50,
                         help='Optunaの試行回数')
-    parser.add_argument('--no-outlier-handling', action='store_true',
-                        help='外れ値処理を無効化')
+    parser.add_argument('--enable-outlier-handling', action='store_true',
+                        help='外れ値処理を有効化（デフォルト: 無効）')
     parser.add_argument('--use-gpu', action='store_true',
                         help='GPU使用')
     parser.add_argument('--features-path', type=str, default=None,
@@ -98,7 +98,7 @@ def main():
     print(f"  学習データ終了日: {args.train_end_date}")
     print(f"  予測月数: {args.step_count}ヶ月")
     print(f"  ハイパーパラメータ最適化: {'有効' if args.use_optuna else '無効'}")
-    print(f"  外れ値処理: {'無効' if args.no_outlier_handling else '有効'}")
+    print(f"  外れ値処理: {'有効' if args.enable_outlier_handling else '無効'}")
     print()
 
     # train_test_predict_time_split 関数の新しいシグネチャに合わせて呼び出し
@@ -109,8 +109,8 @@ def main():
         target_col='actual_value',  # ヤマサデータのターゲット列
         use_optuna=args.use_optuna,
         n_trials=args.n_trials,
-        apply_winsorization=not args.no_outlier_handling,
-        apply_hampel=not args.no_outlier_handling,
+        apply_winsorization=args.enable_outlier_handling,
+        apply_hampel=args.enable_outlier_handling,
         use_gpu=args.use_gpu,
         save_dir=args.save_dir,
         verbose=True

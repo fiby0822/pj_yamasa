@@ -168,10 +168,22 @@ python3 scripts/features/generate_features_batch_s3.py
 
 #### モデル学習
 ```bash
-# 基本学習（1ヶ月予測）
+# 基本学習（高速・フィルタリング適用）
 python3 scripts/train/train_model.py \
     --train-end-date "2024-12-31" \
     --step-count 1
+
+# 外れ値処理を有効化（処理時間増加）
+python3 scripts/train/train_model.py \
+    --train-end-date "2024-12-31" \
+    --step-count 1 \
+    --enable-outlier-handling
+
+# GPU使用（利用可能な場合）
+python3 scripts/train/train_model.py \
+    --train-end-date "2024-12-31" \
+    --step-count 6 \
+    --use-gpu
 
 # Optuna最適化付き学習（6ヶ月予測）
 python3 scripts/train/train_model.py \
@@ -236,7 +248,8 @@ WINDOW_SIZE_CONFIG = {
 - `--step-count`: 予測月数（1~12）
 - `--use-optuna`: Optunaでのハイパーパラメータ最適化
 - `--n-trials`: Optunaの試行回数（デフォルト: 50）
-- `--no-outlier-handling`: 外れ値処理を無効化
+- `--enable-outlier-handling`: 外れ値処理を有効化（デフォルト: 無効）
+- `--use-gpu`: GPU使用（利用可能な場合）
 - `--features-path`: 特徴量ファイルのS3パス
 - `--save-dir`: モデル保存先のS3パス
 
@@ -250,14 +263,27 @@ WINDOW_SIZE_CONFIG = {
 ## 性能・制限事項
 
 ### メモリ要件
-- 全データ処理: 32GB以上推奨
-- バッチ処理モード: 16GBでも動作可能
+- 全データ処理（フィルタリング前）: 32GB以上必要
+- **フィルタリング適用時: 8GB程度で動作可能**
 - データサイズ: 約3,200万レコード、38,512 material keys
+- **フィルタリング後: 約400万レコード、3,000-4,000 material keys**
 
 ### 処理時間（r6a.xlarge: 32GB RAM, 4 vCPU）
 - データ準備: 約5-10分
 - 特徴量生成: 約30-60分（バッチ処理）
-- モデル学習: 約10-30分（データサイズによる）
+- モデル学習:
+  - **フィルタリング適用時: 約2-5分**
+  - フィルタリング無し: 約10-30分
+
+### データフィルタリング機能（v2024.10.15追加）
+学習効率化のため、以下の条件でMaterial Keyを自動フィルタリング：
+- **上位3000個のMaterial Key**（取引量ベース、約80%のカバー率）
+- **テスト期間でアクティブなMaterial Key**（actual_value>0が一定数以上）
+
+これにより：
+- データ量を**約90%削減**
+- メモリ使用量を**24.6GB→3GB**に削減
+- 学習時間を**約1/10に短縮**
 
 ### 主要な機能
 - ✅ 月単位のWalk-forward validation
@@ -281,6 +307,31 @@ WINDOW_SIZE_CONFIG = {
 - メモリ不足の場合はバッチ処理モードを推奨する
 - **重要**: サンプリングによる実行及び実装は一切行わない。全データでの処理が必要な場合は、メモリ増設やバッチ処理などの他の解決策を提案する
 
+## 学習完了後の処理
+
+### EC2インスタンスの自動停止
+学習・予測処理の完了後、コスト削減のためEC2インスタンスを自動停止できます：
+
+```bash
+# 学習実行と自動停止を組み合わせる
+cd /home/ubuntu/yamasa && source venv/bin/activate && \
+python scripts/train/train_model.py --train-end-date "2024-12-31" --step-count 1 && \
+echo "学習完了！10秒後にインスタンスを停止します..." && \
+sleep 10 && \
+sudo shutdown -h now
+
+# バックグラウンドで実行し、完了後自動停止
+nohup bash -c 'cd /home/ubuntu/yamasa && source venv/bin/activate && \
+python scripts/train/train_model.py --train-end-date "2024-12-31" --step-count 6 && \
+echo "学習完了！インスタンスを停止します..." && \
+sudo shutdown -h now' > training.log 2>&1 &
+```
+
+**注意事項**：
+- インスタンスの再起動はAWSコンソールまたはAWS CLIから行う必要があります
+- 長時間の学習の場合は、結果を確認してから手動で停止することを推奨
+- S3への保存は自動的に行われるため、インスタンス停止後もデータは保持されます
+
 ## トラブルシューティング
 
 ### メモリ不足エラー
@@ -302,6 +353,9 @@ python3 scripts/features/generate_features_yamasa.py
 ```
 
 ## 更新履歴
+- 2024/10/15: Material Keyフィルタリング機能追加（データ量90%削減、処理時間1/10）
+- 2024/10/15: 外れ値処理をオプション化（デフォルト無効で高速化）
+- 2024/10/15: EC2インスタンス自動停止の手順追加
 - 2024/10/09: Walk-forward validation実装、月単位予測対応
 - 2024/10/09: バッチ処理によるメモリ効率化
 - 2024/10/09: train_end_dateによるデータリーク防止機能追加
