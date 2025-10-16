@@ -120,6 +120,11 @@ def main():
     if len(df_pred_all) > 0:
         print("\n評価指標を計算中...")
 
+        # 学習期間内の実績発生数を計算（actual_value_count_in_train_periodのため）
+        df_train = df[(df['file_date'] <= args.train_end_date)]
+        train_positive_counts = df_train[df_train['actual_value'] > 0].groupby('material_key').size()
+        train_positive_counts_dict = train_positive_counts.to_dict()
+
         # 結果を評価用の形式に変換
         results_for_eval = {
             'predictions': df_pred_all['predicted'].tolist(),
@@ -138,7 +143,9 @@ def main():
             results=results_for_eval,
             save_results=True,
             generate_plots=True,
-            verbose=True
+            verbose=True,
+            train_actual_counts=train_positive_counts_dict,
+            feature_importance=imp_last
         )
 
         # サマリー表示

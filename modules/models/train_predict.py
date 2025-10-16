@@ -128,7 +128,7 @@ class TimeSeriesPredictor:
         df = df.sort_values(['material_key', 'date'])
 
         # Material Keyのフィルタリング処理を追加
-        df = self._filter_important_material_keys(df, train_end_date, target_col, step_count, verbose)
+        df, prediction_target_keys = self._filter_important_material_keys(df, train_end_date, target_col, step_count, verbose)
 
         # 特徴量列の自動検出
         if feature_cols is None:
@@ -216,7 +216,9 @@ class TimeSeriesPredictor:
             # 予測結果をDataFrameに追加
             test_df['predicted'] = y_pred
             test_df['step'] = step
-            df_pred_all.append(test_df[['date', 'material_key', target_col, 'predicted', 'step']].copy())
+            # 予測対象のmaterial_keyのみを出力
+            test_df_filtered = test_df[test_df['material_key'].isin(prediction_target_keys)]
+            df_pred_all.append(test_df_filtered[['date', 'material_key', target_col, 'predicted', 'step']].copy())
 
             # 最後のモデルと特徴量重要度を保存
             model_last = model
@@ -225,12 +227,14 @@ class TimeSeriesPredictor:
                 'importance': model.feature_importances_
             }).sort_values('importance', ascending=False)
 
-            # ステップ毎のメトリクスを計算（テストデータのみ）
-            step_metrics = self._calculate_metrics(y_test, y_pred)
+            # ステップ毎のメトリクスを計算（予測対象のみ）
+            y_test_filtered = test_df_filtered[target_col].values
+            y_pred_filtered = test_df_filtered['predicted'].values
+            step_metrics = self._calculate_metrics(y_test_filtered, y_pred_filtered)
             all_metrics[f'step_{step}'] = step_metrics
 
             if verbose:
-                print(f"予測完了: {len(y_pred)} サンプル")
+                print(f"予測完了: {len(y_pred_filtered)} サンプル（予測対象のみ）")
                 print(f"RMSE: {step_metrics['RMSE']:.4f}, MAE: {step_metrics['MAE']:.4f}")
 
         # 全予測結果の結合
@@ -544,13 +548,17 @@ class TimeSeriesPredictor:
         target_col: str,
         step_count: int,
         verbose: bool = True
-    ) -> pd.DataFrame:
+    ) -> tuple[pd.DataFrame, set]:
         """
         重要なMaterial Keyのみにフィルタリング
 
         条件:
-        1. 実績発生数上位7000個のmaterial_key（actual_value>0のレコード数ベース）
-        2. テストデータに含まれるmaterial_keyのうち、actual_value>0のレコードがstep_count*4以上
+        学習データ:
+        1. 学習期間での実績発生数上位7000個のmaterial_key（actual_value>0のレコード数ベース）
+        2. テスト期間でactual_value>0のレコードがstep_count*4以上のmaterial_key
+
+        予測対象（返り値の2番目）:
+        - テスト期間でactual_value>0のレコードがstep_count*4以上のmaterial_keyのみ
 
         Parameters:
         -----------
@@ -567,8 +575,8 @@ class TimeSeriesPredictor:
 
         Returns:
         --------
-        pd.DataFrame
-            フィルタリング後のデータ
+        tuple[pd.DataFrame, set]
+            フィルタリング後のデータ, 予測対象のmaterial_keyセット
         """
         original_count = len(df)
         original_keys = df['material_key'].nunique()
@@ -641,4 +649,5 @@ class TimeSeriesPredictor:
         del df
         gc.collect()
 
-        return df_filtered
+        # 予測対象のmaterial_key（条件2のみ）を返す
+        return df_filtered, set(active_keys)

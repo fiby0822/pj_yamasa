@@ -29,7 +29,9 @@ class ModelEvaluator:
         results: Dict[str, Any],
         save_results: bool = True,
         generate_plots: bool = True,
-        verbose: bool = True
+        verbose: bool = True,
+        train_actual_counts: Dict = None,
+        feature_importance: pd.DataFrame = None
     ) -> Dict[str, Any]:
         """
         予測結果の評価
@@ -142,7 +144,7 @@ class ModelEvaluator:
 
         # 結果の保存
         if save_results:
-            self._save_evaluation_results(evaluation)
+            self._save_evaluation_results(evaluation, train_actual_counts, feature_importance)
 
         return evaluation
 
@@ -192,7 +194,7 @@ class ModelEvaluator:
 
         return metrics
 
-    def _create_material_summary(self, pred_df: pd.DataFrame) -> pd.DataFrame:
+    def _create_material_summary(self, pred_df: pd.DataFrame, train_actual_counts: Dict = None) -> pd.DataFrame:
         """
         Material Key × Year-Month の集計データを作成
 
@@ -200,6 +202,8 @@ class ModelEvaluator:
         -----------
         pred_df : pd.DataFrame
             予測結果のDataFrame
+        train_actual_counts : Dict
+            学習期間内のMaterial Key別実績発生数
 
         Returns:
         --------
@@ -219,7 +223,7 @@ class ModelEvaluator:
             # Material Key × Year-Month でグループ化して集計
             summary = df.groupby(['material_key', 'predict_year_month']).agg({
                 'actual': [
-                    ('actual_value_count', lambda x: (x > 0).sum()),  # 実績値>0の件数
+                    ('actual_value_count_in_predict_period', lambda x: (x > 0).sum()),  # 予測期間での実績値>0の件数
                     ('actual_value_mean', 'mean')  # 実績値平均
                 ],
                 'predicted': [
@@ -234,11 +238,24 @@ class ModelEvaluator:
             summary.columns = [
                 'material_key',
                 'predict_year_month',
-                'actual_value_count',
+                'actual_value_count_in_predict_period',
                 'actual_value_mean',
                 'predict_value_mean',
                 'error_value_mean'
             ]
+
+            # 学習期間内の実績発生数を追加
+            if train_actual_counts:
+                summary['actual_value_count_in_train_period'] = summary['material_key'].map(train_actual_counts).fillna(0).astype(int)
+            else:
+                # train_actual_countsがない場合は0を設定
+                summary['actual_value_count_in_train_period'] = 0
+
+            # カラムの順序を調整
+            summary = summary[['material_key', 'predict_year_month',
+                              'actual_value_count_in_train_period',
+                              'actual_value_count_in_predict_period',
+                              'actual_value_mean', 'predict_value_mean', 'error_value_mean']]
 
             # 数値を適切な精度に丸める
             summary['actual_value_mean'] = summary['actual_value_mean'].round(2)
@@ -408,7 +425,7 @@ class ModelEvaluator:
 
         return plot_paths
 
-    def _save_evaluation_results(self, evaluation: Dict[str, Any]):
+    def _save_evaluation_results(self, evaluation: Dict[str, Any], train_actual_counts: Dict = None, feature_importance: pd.DataFrame = None):
         """評価結果をS3に保存"""
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
 
@@ -434,7 +451,7 @@ class ModelEvaluator:
             )
 
             # Material Key × Year-Month集計CSVの作成と保存
-            summary_df = self._create_material_summary(evaluation['prediction_df'])
+            summary_df = self._create_material_summary(evaluation['prediction_df'], train_actual_counts)
             if summary_df is not None:
                 summary_buffer = StringIO()
                 summary_df.to_csv(summary_buffer, index=False)
@@ -456,6 +473,34 @@ class ModelEvaluator:
                 )
 
                 print(f"  - Material集計: s3://{self.bucket_name}/{summary_key}")
+
+        # 特徴量重要度のCSV保存
+        if feature_importance is not None and not feature_importance.empty:
+            # 重要度が高い順にソート
+            feature_importance_sorted = feature_importance.sort_values('importance', ascending=False)
+
+            importance_buffer = StringIO()
+            feature_importance_sorted.to_csv(importance_buffer, index=False)
+
+            # タイムスタンプ付きファイル
+            importance_key = f"output/evaluation/{self.model_type}_feature_importance_{timestamp}.csv"
+            self.s3_client.put_object(
+                Bucket=self.bucket_name,
+                Key=importance_key,
+                Body=importance_buffer.getvalue(),
+                ContentType='text/csv'
+            )
+
+            # 最新版
+            latest_importance_key = f"output/evaluation/{self.model_type}_feature_importance_latest.csv"
+            self.s3_client.put_object(
+                Bucket=self.bucket_name,
+                Key=latest_importance_key,
+                Body=importance_buffer.getvalue(),
+                ContentType='text/csv'
+            )
+
+            print(f"  - 特徴量重要度: s3://{self.bucket_name}/{importance_key}")
 
         # メトリクスのJSON保存
         metrics_to_save = {
