@@ -220,6 +220,13 @@ class ModelEvaluator:
             # Year-Monthカラムを作成
             df['predict_year_month'] = df['date'].dt.strftime('%Y-%m')
 
+            # error_value_meanの計算用カラムを追加
+            # actual_value > 0 のレコードに対して、abs(予測値-実績値)/実績値 を計算
+            df['relative_error'] = df.apply(
+                lambda row: abs(row['predicted'] - row['actual']) / row['actual'] if row['actual'] > 0 else None,
+                axis=1
+            )
+
             # Material Key × Year-Month でグループ化して集計
             summary = df.groupby(['material_key', 'predict_year_month']).agg({
                 'actual': [
@@ -229,8 +236,8 @@ class ModelEvaluator:
                 'predicted': [
                     ('predict_value_mean', 'mean')  # 予測値平均
                 ],
-                'error': [
-                    ('error_value_mean', 'mean')  # 平均誤差（予測値 - 実績値）
+                'relative_error': [
+                    ('error_value_mean', lambda x: x.dropna().mean() if len(x.dropna()) > 0 else 0)  # 相対誤差の平均（actual > 0のレコードのみ）
                 ]
             }).reset_index()
 
