@@ -50,10 +50,11 @@ yamasa/
 │   │   ├── run_prepare_yamasa.py      # Excelファイル加工
 │   │   └── run_prepare_fill_zero.py   # ゼロ値補完
 │   ├── features/        # 特徴量生成スクリプト
+│   │   ├── generate_features.py           # 特徴量生成メイン（統合版）
 │   │   ├── generate_features_batch_s3.py  # バッチ処理（S3中間保存）
-│   │   └── generate_features_yamasa.py    # 通常処理
+│   │   └── generate_features_by_usage_type.py  # usage_type別処理
 │   ├── train/          # モデル学習スクリプト
-│   │   └── train_model.py            # モデル学習実行
+│   │   └── train_model.py            # モデル学習メイン（統合版）
 │   └── predict/        # 予測スクリプト
 │       └── run_prediction.py         # 予測実行
 ├── notebooks/          # Jupyter Notebook格納
@@ -76,10 +77,11 @@ yamasa/
    - 他の項目はfile_dateから遡って最新のレコードを補完する
    - 出力ファイル名: `df_confirmed_order_input_yamasa_fill_zero.parquet`
 
-### 2. 特徴量の生成 (create_features_**.py)
+### 2. 特徴量の生成 (generate_features.py)
 1のデータをもとに特徴量を生成する
 - 特徴量はラグ特徴量やmaterial_key毎の週平均など、過去データを用いるものが多いが、train_end_dateで指定した期間の特徴量を用いる
 - 即ち、train_end_dateより後の期間のactual_valueは欠損値として特徴量を全期間に対して計算する
+- **デフォルトはusage_type別での特徴量生成**（business/household別に処理）
 
 #### 🔴 特徴量命名規則（必須）
 **すべての特徴量カラムは末尾に `_f` を付ける必要があります。**
@@ -95,32 +97,51 @@ yamasa/
   - 累積平均（2, 3, 6, 12期間）
   - 変化率
   - 曜日、週番号、月、年の特徴量
-- 出力: `confirmed_order_demand_yamasa_features_latest.parquet`
+  - container特徴量（usage_typeに基づく）
 
-### 3. 予測モデルの構築・予測の実行 (train_predict_**.py)
+#### 出力ファイル:
+- **usage_type別（デフォルト）**:
+  - `data/features/confirmed_order_demand_yamasa_features_business_latest.parquet`
+  - `data/features/confirmed_order_demand_yamasa_features_household_latest.parquet`
+- **全データ版**:
+  - `output/features/confirmed_order_demand_yamasa_features_latest.parquet`
+
+### 3. 予測モデルの構築・予測の実行 (train_model.py)
 - 2で生成した特徴量を用いる
 - step_countで指定した月の数だけ予測を行う
   - 例: step_count=6, train_end_date=2024/12/31の場合、2025/1~2025/6までの6ヶ月分の予測結果を返す
 - 予測対象のデータに対して、実績値がゼロより大きい値に対して予測する
 - モデルは指示がなければxgboostを使い、ランダムサンプリングは行わない
 - Walk-forward validation（月単位）で検証
-- 外れ値処理: Winsorization、Hampelフィルタを適用
+- 外れ値処理: Winsorization、Hampelフィルタを適用（オプション）
+- **デフォルトはusage_type別での学習・予測**
+
+#### Material Keyフィルタリング:
+- **Business**:
+  - 学習期間: Top 3,000 material keys
+  - テスト期間: 最低 step_count * 2 件以上
+- **Household**:
+  - 学習期間: Top 3,500 material keys
+  - テスト期間: 最低 step_count * 4 件以上
+- **全データ**:
+  - 学習期間: Top 7,000 material keys
+  - テスト期間: 最低 step_count * 4 件以上
 
 ### 4. 評価指標を算出し、表示・保存 (analyze_**.py)
 モデル実行と同じ処理内で、下記項目を計算し表示・保存する。モデルや特徴量の変更があった場合は、変更前と変更後の値を表示する。
 
-誤差率の定義: 「(予測値-実績値の絶対値)/実績値」をmaterial_key毎に計算する
+誤差率平均の定義: 「(予測値-実績値の絶対値)/実績値」をmaterial_key毎に平均する
 
 - **基本評価指標**:
   - RMSE
   - MAE
-  - 誤差率平均値
-  - 誤差率中央値
+  - 誤差率平均の平均値
+  - 誤差率平均の中央値
 
-- **誤差率分析**:
-  - 誤差率が20%以内のmaterial_key数・割合
-  - 誤差率が30%以内のmaterial_key数・割合
-  - 誤差率が50%以内のmaterial_key数・割合
+- **誤差率平均分析**:
+  - 誤差率平均が20%以内のmaterial_key数・割合
+  - 誤差率平均が30%以内のmaterial_key数・割合
+  - 誤差率平均が50%以内のmaterial_key数・割合
 
 - **追加指標**:
   - MAPE（平均絶対パーセント誤差）
@@ -148,6 +169,19 @@ python scripts/train/train_model.py --train-end-date "2024-12-31" --step-count 1
 ```
 
 ## 実行方法
+
+### 推奨ワークフロー（usage_type別処理）
+
+```bash
+# 1. データ準備
+./run_prepare.sh
+
+# 2. 特徴量生成（usage_type別）
+python3 scripts/features/generate_features.py --mode by_usage_type
+
+# 3. モデル学習・予測（usage_type別）
+python3 scripts/train/train_model.py --mode by_usage_type --train-end-date "2024-12-31" --step-count 1
+```
 
 ### 方法1: 全体パイプラインの実行
 
@@ -184,8 +218,11 @@ python3 scripts/prepare/run_prepare_fill_zero.py
 
 #### 特徴量生成
 ```bash
-# 通常処理（メモリ32GB以上推奨）
-python3 scripts/features/generate_features_yamasa.py
+# usage_type別に特徴量生成（デフォルト・推奨）
+python3 scripts/features/generate_features.py --mode by_usage_type
+
+# 全データで特徴量生成
+python3 scripts/features/generate_features.py --mode all
 
 # バッチ処理（メモリ制限がある場合）
 python3 scripts/features/generate_features_batch_s3.py
@@ -193,25 +230,35 @@ python3 scripts/features/generate_features_batch_s3.py
 
 #### モデル学習
 ```bash
-# 基本学習（高速・フィルタリング適用）
+# usage_type別で学習（デフォルト・推奨）
 python3 scripts/train/train_model.py \
+    --mode by_usage_type \
+    --train-end-date "2024-12-31" \
+    --step-count 1
+
+# 全データで学習（従来版）
+python3 scripts/train/train_model.py \
+    --mode all \
     --train-end-date "2024-12-31" \
     --step-count 1
 
 # 外れ値処理を有効化（処理時間増加）
 python3 scripts/train/train_model.py \
+    --mode by_usage_type \
     --train-end-date "2024-12-31" \
     --step-count 1 \
     --enable-outlier-handling
 
 # GPU使用（利用可能な場合）
 python3 scripts/train/train_model.py \
+    --mode by_usage_type \
     --train-end-date "2024-12-31" \
     --step-count 6 \
     --use-gpu
 
 # Optuna最適化付き学習（6ヶ月予測）
 python3 scripts/train/train_model.py \
+    --mode by_usage_type \
     --train-end-date "2024-12-31" \
     --step-count 6 \
     --use-optuna \
@@ -237,20 +284,33 @@ s3://fiby-yamasa-prediction/
     ├── df_confirmed_order_input_yamasa.parquet           # 加工済みデータ
     ├── df_confirmed_order_input_yamasa_fill_zero.parquet # ゼロ値補完済み
     ├── features/                  # 特徴量データ
-    │   ├── confirmed_order_demand_yamasa_features_latest.parquet
+    │   ├── confirmed_order_demand_yamasa_features_latest.parquet  # 全データ版
+    │   ├── confirmed_order_demand_yamasa_features_business_latest.parquet
+    │   ├── confirmed_order_demand_yamasa_features_household_latest.parquet
     │   ├── confirmed_order_demand_yamasa_features_[timestamp].parquet
     │   └── temp_batches/          # バッチ処理の中間ファイル
     ├── models/                    # 学習済みモデル
-    │   ├── confirmed_order_demand_yamasa_model_latest.pkl
+    │   ├── confirmed_order_demand_yamasa_model_latest.pkl  # 全データ版
+    │   ├── confirmed_order_demand_yamasa_model_business_latest.pkl
+    │   ├── confirmed_order_demand_yamasa_model_household_latest.pkl
     │   ├── confirmed_order_demand_yamasa_params_latest.pkl
     │   └── confirmed_order_demand_yamasa_model_[timestamp].pkl
     ├── predictions/               # 予測結果
-    │   ├── confirmed_order_demand_yamasa_predictions_latest.parquet
+    │   ├── confirmed_order_demand_yamasa_predictions_latest.parquet  # 全データ版
+    │   ├── confirmed_order_demand_yamasa_predictions_by_usage_type_latest.parquet
     │   └── confirmed_order_demand_yamasa_predictions_[timestamp].parquet
     └── evaluation/                # 評価結果
         ├── confirmed_order_demand_yamasa_metrics_latest.json
         ├── confirmed_order_demand_yamasa_predictions_latest.csv
+        ├── confirmed_order_demand_yamasa_material_summary_latest.csv
         └── *.png                  # 可視化画像
+```
+
+### ローカル構造（usage_type別特徴量）
+```
+/home/ubuntu/yamasa/data/features/
+├── confirmed_order_demand_yamasa_features_business_latest.parquet
+└── confirmed_order_demand_yamasa_features_household_latest.parquet
 ```
 
 ## パラメータ説明
@@ -268,15 +328,22 @@ WINDOW_SIZE_CONFIG = {
 }
 ```
 
+### generate_features.py
+- `--mode`: 生成モード
+  - `by_usage_type`（デフォルト）: usage_type別に特徴量生成
+  - `all`: 全データで特徴量生成
+- `--train-end-date`: 学習データの終了日（デフォルト: 2024-12-31）
+
 ### train_model.py
-- `--train-end-date`: 学習データの終了日（YYYY-MM-DD）
-- `--step-count`: 予測月数（1~12）
+- `--mode`: 学習モード
+  - `by_usage_type`（デフォルト）: usage_type別にモデル学習
+  - `all`: 全データでモデル学習
+- `--train-end-date`: 学習データの終了日（デフォルト: 2024-12-31）
+- `--step-count`: 予測月数（デフォルト: 1）
 - `--use-optuna`: Optunaでのハイパーパラメータ最適化
 - `--n-trials`: Optunaの試行回数（デフォルト: 50）
 - `--enable-outlier-handling`: 外れ値処理を有効化（デフォルト: 無効）
 - `--use-gpu`: GPU使用（利用可能な場合）
-- `--features-path`: 特徴量ファイルのS3パス
-- `--save-dir`: モデル保存先のS3パス
 
 ### run_prediction.py
 - `--mode`: 予測モード（future, walk-forward, material-key, single-date）
@@ -378,6 +445,9 @@ python3 scripts/features/generate_features_yamasa.py
 ```
 
 ## 更新履歴
+- 2024/10/20: usage_type別の特徴量生成・学習を統合版スクリプトに集約
+- 2024/10/20: material_summaryファイルに学習期間・予測期間の実績発生数カラムを追加
+- 2024/10/20: 誤差率平均の定義を修正（material_key毎の平均値として正しく計算）
 - 2024/10/15: Material Keyフィルタリング機能追加（データ量90%削減、処理時間1/10）
 - 2024/10/15: 外れ値処理をオプション化（デフォルト無効で高速化）
 - 2024/10/15: EC2インスタンス自動停止の手順追加
