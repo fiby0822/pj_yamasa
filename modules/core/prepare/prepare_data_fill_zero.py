@@ -22,13 +22,13 @@ TARGET_COL = "actual_value"
 # 補完対象列（存在する列のみ使用、曜日・週番号は再計算）
 POSSIBLE_COLS_TO_PROPAGATE = [
     "product_key", "product_name", "store_code", "usage_type",
-    "category_lvl1", "category_lvl2", "category_lvl3", "container", "file_name",
+    "category_lvl1", "category_lvl2", "category_lvl3", "container_f", "file_name",
 ]
 
 # カテゴリ変換対象列（メモリ最適化）
 POSSIBLE_COLS_TO_CATEGORIZE = [
     "usage_type", "product_key", "product_name", "store_code",
-    "file_name", "category_lvl1", "category_lvl2", "category_lvl3", "container"
+    "file_name", "category_lvl1", "category_lvl2", "category_lvl3", "container_f"
 ]
 
 def memory_megabytes(df: pd.DataFrame) -> float:
@@ -45,9 +45,9 @@ def optimize_types(df: pd.DataFrame,
     for c in df.select_dtypes(include=["float64"]).columns:
         df[c] = df[c].astype("float32")
     for c in df.select_dtypes(include=["int64"]).columns:
-        if c in ["day_of_week_mon1"]:
+        if c in ["day_of_week_mon1_f"]:
             df[c] = df[c].astype("int8")
-        elif c in ["week_number"]:
+        elif c in ["week_number_f"]:
             df[c] = df[c].astype("int16")
         else:
             df[c] = df[c].astype("int32")
@@ -124,8 +124,8 @@ def process_batch(df_batch: pd.DataFrame, cols_to_propagate: list) -> pd.DataFra
 
     # 曜日・週番号・月を再計算
     merged[DATE_COL] = pd.to_datetime(merged[DATE_COL])
-    merged["day_of_week_mon1"] = (merged[DATE_COL].dt.dayofweek + 1).astype("int8")
-    merged["week_number"] = merged[DATE_COL].dt.isocalendar().week.astype("int16")
+    merged["day_of_week_mon1_f"] = (merged[DATE_COL].dt.dayofweek + 1).astype("int8")
+    merged["week_number_f"] = merged[DATE_COL].dt.isocalendar().week.astype("int16")
     merged["month"] = merged[DATE_COL].dt.to_period("M").dt.to_timestamp()
 
     return merged

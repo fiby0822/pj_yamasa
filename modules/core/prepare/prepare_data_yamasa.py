@@ -32,13 +32,13 @@ RENAME_MAP = {
     "品名": "product_name",
     "店番": "store_code",
     "出荷数": "actual_value",
-    "曜日（月=1）": "day_of_week_mon1",
-    "週番号": "week_number",
+    "曜日（月=1）": "day_of_week_mon1_f",
+    "週番号": "week_number_f",
     "品目階層1": "category_lvl1",
     "品目階層2": "category_lvl2",
     "品目階層3": "category_lvl3",
     "容量": "volume",
-    "容器": "container",
+    "容器": "container_f",
 }
 
 def parse_excel_date(series: pd.Series) -> pd.Series:

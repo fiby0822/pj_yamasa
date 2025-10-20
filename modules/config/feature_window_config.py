@@ -5,7 +5,7 @@ This configuration defines window sizes for various feature types across differe
 
 WINDOW_SIZE_CONFIG = {
     "material_key": {
-        "lag": [1, 2, 3],
+        "lag": [1, 2, 3, 7],  # lag_7を追加
         "rolling_mean": [2, 3, 6],
         "rolling_std": [2, 3, 6],
         "rate_of_change": [1],

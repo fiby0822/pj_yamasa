@@ -2,6 +2,10 @@
 """
 ヤマサ確定注文需要予測用の特徴量生成実行スクリプト
 """
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).resolve().parents[2]))
+
 import pandas as pd
 from datetime import datetime
 from modules.features.feature_generator_with_s3 import FeatureGeneratorWithS3

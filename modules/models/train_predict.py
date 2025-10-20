@@ -63,7 +63,8 @@ class TimeSeriesPredictor:
         hampel_threshold: float = 3.0,
         use_gpu: bool = False,
         save_dir: Optional[str] = None,
-        verbose: bool = True
+        verbose: bool = True,
+        min_test_active_records: Optional[int] = None
     ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, Dict, Any, Dict]:
         """
         Walk-forward validationによる時系列予測（月単位）
@@ -100,6 +101,8 @@ class TimeSeriesPredictor:
             モデル保存ディレクトリ（S3パス）
         verbose : bool
             詳細出力フラグ
+        min_test_active_records : int, optional
+            テスト期間での最小実績発生数の閾値（デフォルト: step_count * 4）
 
         Returns:
         --------
@@ -128,7 +131,7 @@ class TimeSeriesPredictor:
         df = df.sort_values(['material_key', 'date'])
 
         # Material Keyのフィルタリング処理を追加
-        df, prediction_target_keys = self._filter_important_material_keys(df, train_end_date, target_col, step_count, verbose)
+        df, prediction_target_keys = self._filter_important_material_keys(df, train_end_date, target_col, step_count, verbose, min_test_active_records)
 
         # 特徴量列の自動検出
         if feature_cols is None:
@@ -547,7 +550,8 @@ class TimeSeriesPredictor:
         train_end_date: str,
         target_col: str,
         step_count: int,
-        verbose: bool = True
+        verbose: bool = True,
+        min_test_active_records: Optional[int] = None
     ) -> tuple[pd.DataFrame, set]:
         """
         重要なMaterial Keyのみにフィルタリング
@@ -572,6 +576,8 @@ class TimeSeriesPredictor:
             予測する月数
         verbose : bool
             詳細出力フラグ
+        min_test_active_records : int, optional
+            テスト期間での最小実績発生数の閾値（デフォルト: step_count * 4）
 
         Returns:
         --------
@@ -611,8 +617,8 @@ class TimeSeriesPredictor:
         # actual_value > 0のレコード数を計算
         mk_active_counts = test_period_df[test_period_df[target_col] > 0].groupby('material_key').size()
 
-        # step_count * 4以上のアクティブなレコードがあるMaterial Key
-        min_active_records = step_count * 4
+        # 閾値の設定（指定がない場合はstep_count * 4）
+        min_active_records = min_test_active_records if min_test_active_records is not None else step_count * 4
         active_keys = mk_active_counts[mk_active_counts >= min_active_records].index.values
 
         # 条件を満たすMaterial Keyの和集合

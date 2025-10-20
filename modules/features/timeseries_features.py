@@ -4,6 +4,7 @@ Time series feature generation module with train_end_date support.
 import pandas as pd
 import numpy as np
 from typing import Optional, Dict, Any
+import jpholiday
 from modules.config.feature_window_config import WINDOW_SIZE_CONFIG
 
 
@@ -53,11 +54,12 @@ def add_timeseries_features(
     # データフレームをmaterial_keyとfile_dateでソート
     df.sort_values(by=['material_key', 'file_date'], inplace=True)
 
-    # 年月の特徴量を追加
-    df['year'] = df['file_date'].dt.year
-    df['month'] = df['file_date'].dt.month
-    df["year_f"] = df["year"].astype("int16")
-    df["month_f"] = df["month"].astype("int8")
+    # 年月の特徴量を追加（_f付きのみ保持）
+    df["year_f"] = df['file_date'].dt.year.astype("int16")
+    df["month_f"] = df['file_date'].dt.month.astype("int8")
+
+    # 追加の日付関連特徴量
+    df["day_of_week_f"] = df['file_date'].dt.dayofweek.astype("int8")  # 0=月曜日
 
     # material_key毎の特徴量作成
     print("Creating material_key features...")
@@ -74,6 +76,10 @@ def add_timeseries_features(
         print("Creating features for Yamasa confirmed order model...")
         _create_yamasa_features(df, window_size_config)
 
+    # 共通の追加特徴量を作成
+    print("Creating additional common features...")
+    _create_additional_features(df)
+
     print("All features done")
 
     # 元のactual_valueを復元（必要に応じて）
@@ -82,7 +88,7 @@ def add_timeseries_features(
         print("Restored original actual_values")
 
     # 指定された年の範囲でフィルタリング
-    df.query("(@start_year <= year) & (year <= @end_year)", inplace=True)
+    df.query("(@start_year <= year_f) & (year_f <= @end_year)", inplace=True)
 
     # material_keyの欠損除去
     df.dropna(subset=["material_key"], inplace=True)
@@ -267,6 +273,81 @@ def _create_yamasa_features(df: pd.DataFrame, window_size_config: Dict[str, Any]
             )
 
     print("Yamasa features done")
+
+
+def _create_additional_features(df: pd.DataFrame) -> None:
+    """追加の共通特徴量を作成"""
+
+    # 2. is_business_day_f: 営業日フラグ
+    def is_business_day(date):
+        """営業日判定（土日祝日以外）"""
+        if pd.isna(date):
+            return np.nan
+        # 土日判定
+        if date.weekday() >= 5:  # 5=土曜, 6=日曜
+            return 0
+        # 祝日判定
+        if jpholiday.is_holiday(date):
+            return 0
+        return 1
+
+    df['is_business_day_f'] = df['file_date'].apply(is_business_day).astype("int8")
+
+    # 3. dow_month_interaction_f: 曜日×月の交互作用
+    df['dow_month_interaction_f'] = (df['day_of_week_f'] * df['month_f']).astype("int16")
+
+    # 4. week_to_date_mean_f: 週初からの累積平均
+    # 週の開始日を計算（月曜日始まり）
+    df['week_start'] = df['file_date'] - pd.to_timedelta(df['file_date'].dt.dayofweek, unit='d')
+
+    # material_key × week_start でグループ化して累積平均を計算
+    df['week_to_date_mean_f'] = (
+        df.sort_values(['material_key', 'file_date'])
+        .groupby(['material_key', 'week_start'])['actual_value']
+        .expanding(min_periods=1)
+        .mean()
+        .reset_index(level=[0,1], drop=True)
+        .astype("float32")
+    )
+
+    # 現在のデータをシフト（リーク防止）
+    df['week_to_date_mean_f'] = (
+        df.groupby(['material_key', 'week_start'])['week_to_date_mean_f']
+        .shift(1)
+    )
+
+    # week_startカラムを削除
+    df.drop('week_start', axis=1, inplace=True)
+
+    # 5. material_dow_mean_f: Material Key×曜日の過去平均
+    _create_entity_dow_mean(df, 'material_key', 'material_dow_mean_f')
+
+    # 6. product_key_dow_mean_f: product_key×曜日の過去平均
+    if 'product_key' in df.columns:
+        _create_entity_dow_mean(df, 'product_key', 'product_key_dow_mean_f')
+
+    # 7. store_code_dow_mean_f: store_code×曜日の過去平均
+    if 'store_code' in df.columns:
+        _create_entity_dow_mean(df, 'store_code', 'store_code_dow_mean_f')
+
+    # 8. category_lvl1_dow_mean_f: category_lvl1×曜日の過去平均
+    if 'category_lvl1' in df.columns:
+        _create_entity_dow_mean(df, 'category_lvl1', 'category_lvl1_dow_mean_f')
+
+    print("Additional features done")
+
+
+def _create_entity_dow_mean(df: pd.DataFrame, entity_col: str, feature_name: str) -> None:
+    """エンティティ×曜日の過去平均を計算"""
+    # エンティティ×曜日でグループ化して累積平均を計算
+    df.sort_values([entity_col, 'file_date'], inplace=True)
+
+    # 累積平均を計算（現在の値を除外）
+    df[feature_name] = (
+        df.groupby([entity_col, 'day_of_week_f'])['actual_value']
+        .transform(lambda x: x.expanding(min_periods=1).mean().shift(1))
+        .astype("float32")
+    )
 
 
 # エイリアスを作成（後方互換性のため）
